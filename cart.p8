@@ -7,11 +7,14 @@ hurtbox channels
 	2: witch
 	4: minions
 	8: tombstones
+	16: fences
 
 obstacle channels
 	1: player
 	2: tombstones
 	4: trees
+	8: minions
+	16: fences
 ]]
 
 -- useful no-op function
@@ -30,6 +33,7 @@ local direction_attrs={
 -- global entity vars
 local entities
 local new_entities
+local player
 
 -- global input vars
 local buttons={}
@@ -42,34 +46,63 @@ local entity_classes={
 		height=7,
 		hurtbox_channel=1, -- player
 		obstacle_channel=1, -- player
-		collision_channel=2+4, -- tombstones + trees
+		collision_channel=2+4+16, -- tombstones + trees + fences
 		facing_dir="right",
 		move_dir=nil,
+		mace_attack_anim=0,
+		mace_attack_cooldown=0,
 		javelin_throw_anim=0,
 		javelin_throw_cooldown=0,
+		dodge_roll_dir=nil,
+		dodge_roll_anim=0,
+		dodge_roll_end_anim=0,
+		dodge_roll_detection=5,
+		health=5,
+		weapons={"mace","javelin"},
+		weapon_index=1,
 		update=function(self)
+			decrement_counter_prop(self,"mace_attack_anim")
+			decrement_counter_prop(self,"mace_attack_cooldown")
 			decrement_counter_prop(self,"javelin_throw_anim")
 			decrement_counter_prop(self,"javelin_throw_cooldown")
-			-- switch move direction when a button pressed
-			foreach(directions,function(dir)
-				if btnp2(dir) then
-					self.move_dir=dir
-				end
-			end)
-			-- stop moving when the button is released
-			if self.move_dir and not btn2(self.move_dir) then
+			decrement_counter_prop(self,"dodge_roll_end_anim")
+			if decrement_counter_prop(self,"dodge_roll_anim") then
+				self.dodge_roll_end_anim=10
 				self.move_dir=nil
 			end
-			-- switch move direction to a held button
-			if not self.move_dir then
+			if decrement_counter_prop(self,"dodge_roll_detection") then
+				self.dodge_roll_dir=nil
+			end
+			-- switch move direction when a button pressed
+			if self.dodge_roll_end_anim<=0 then
 				foreach(directions,function(dir)
-					if btn2(dir) then
+					if self.dodge_roll_anim<=0 and btnp2(dir) then
 						self.move_dir=dir
+						if dir==self.dodge_roll_dir then
+							self.dodge_roll_anim=8
+						else
+							self.dodge_roll_detection=8
+							self.dodge_roll_dir=dir
+						end
 					end
 				end)
+				if self.dodge_roll_anim<=0 then
+					-- stop moving when the button is released
+					if self.move_dir and not btn2(self.move_dir) then
+						self.move_dir=nil
+					end
+					-- switch move direction to a held button
+					if not self.move_dir then
+						foreach(directions,function(dir)
+							if btn2(dir) then
+								self.move_dir=dir
+							end
+						end)
+					end
+				end
 			end
 			-- no moving during an animation
-			if self.javelin_throw_anim>0 then
+			if self.javelin_throw_anim>0 or self.mace_attack_anim>0 or self.dodge_roll_end_anim>0 then
 				self.vx,self.vy=0,0
 			else
 				-- face the direction of movement
@@ -77,30 +110,72 @@ local entity_classes={
 					self.facing_dir=self.move_dir
 				end
 				-- move in the movement direction
-				self.vx,self.vy=dir_to_vector(self.move_dir)
+				self.vx,self.vy=dir_to_vector(self.move_dir,ternary(self.dodge_roll_anim>0,2.5,1))
 			end
 			-- move the character
 			self:apply_velocity()
+			-- switch weapons
+			if btnp2("x") then
+				self.weapon_index=1+(self.weapon_index%#self.weapons)
+			end
 			-- throw a javelin
-			if btnp2("z") and self.javelin_throw_cooldown<=0 then
-				self.javelin_throw_anim=10
-				self.javelin_throw_cooldown=30
-				spawn_entity("javelin",self.x+2,self.y-2,{move_dir=self.facing_dir})
+			if self.dodge_roll_anim<=0 and self.dodge_roll_end_anim<=0 and btnp2("z") then
+				if self.weapons[self.weapon_index]=="mace" and self.mace_attack_cooldown<=0 then
+					self.mace_attack_anim=10
+					self.mace_attack_cooldown=10
+					spawn_entity("mace_attack",self.x,self.y,{slash_dir=self.facing_dir})
+				elseif self.weapons[self.weapon_index]=="javelin" and self.javelin_throw_cooldown<=0 then
+					self.javelin_throw_anim=10
+					self.javelin_throw_cooldown=30
+					spawn_entity("javelin",self.x+2,self.y+2,{move_dir=self.facing_dir})
+				end
 			end
 		end,
 		draw=function(self)
-			rectfill(self.x-0.5,self.y-4.5,self.x+7.5,self.y+6.5,9)
+			rectfill(self.x+0.5,self.y-4.5,self.x+6.5,self.y+6.5,9)
 			self:draw_outline(10)
 		end
 	},
+	mace_attack={
+		width=7,
+		height=7,
+		frames_to_death=1,
+		hitbox_channel=2+4+8+16, -- witches + minions + tombstones + fences
+		damage=1,
+		init=function(self)
+			local x,y=dir_to_vector(self.slash_dir,5)
+			self.x+=x
+			self.y+=y
+		end
+	},
 	javelin={
-		width=3,
-		height=3,
-		hitbox_channel=2+4+8, -- witches, minions, tombstones
-		collision_channel=4, -- trees
+		width=5,
+		height=5,
+		hitbox_channel=2+4+8, -- witches + minions + tombstones
+		collision_channel=4+16, -- trees + fences
+		damage=1,
 		update=function(self)
 			self.vx,self.vy=dir_to_vector(self.move_dir,2)
 			self:apply_velocity()
+		end,
+		draw=function(self)
+			local x,y=self.x,self.y-1
+			self:draw_outline(8)
+			if self.move_dir=="up" then
+				sspr2(0,7,3,11,x+1,y,true)
+			elseif self.move_dir=="down" then
+				sspr2(0,7,3,11,x+1,y-6)
+			elseif self.move_dir=="left" then
+				sspr2(3,7,11,3,x,y)
+			elseif self.move_dir=="right" then
+				sspr2(3,7,11,3,x-6,y,true)
+			end
+		end,
+		on_hit=function(self)
+			self:die()
+		end,
+		on_collide=function(self)
+			self:die()
 		end
 	},
 	witch={
@@ -113,14 +188,68 @@ local entity_classes={
 			self:draw_outline(13)
 		end
 	},
-	tombstone={
+	frog={
 		width=7,
+		height=6,
+		health=1,
+		hitbox_channel=1, -- player
+		hurtbox_channel=4, -- minion
+		obstacle_channel=8, -- minion
+		collision_channel=2+4+8+16, -- tombstones + trees + minions + fences
+		hop_frames=0,
+		init=function(self)
+			self.frames_to_hop=rnd_int(35,50)
+		end,
+		update=function(self)
+			decrement_counter_prop(self,"hop_frames")
+			if decrement_counter_prop(self,"frames_to_hop") then
+				local dx=mid(-100,player:center_x()-self:center_x(),100)
+				local dy=mid(-100,player:center_y()-self:center_y(),100)
+				local dist=sqrt(dx*dx+dy*dy)
+				self.vx,self.vy=dx/dist,dy/dist
+				self.frames_to_hop=rnd_int(35,50)
+				self.hop_frames=rnd_int(8,12)
+				self.is_facing_right=self.vx>0
+			end
+			if self.hop_frames<=0 then
+				self.vx,self.vy=0,0
+			end
+			self:apply_velocity()
+		end,
+		draw=function(self)
+			-- self:draw_outline(8)
+			sspr2(ternary(self.hop_frames>0,31,22),0,9,6,self.x-1,self.y,self.is_facing_right)
+		end,
+		on_hurt=function(self,entity)
+			self.invincibility_frames=3
+			self.health-=entity.damage
+			if self.health<=0 then
+				self:die()
+			end
+		end
+	},
+	tombstone={
+		width=6,
 		height=6,
 		hurtbox_channel=8, -- tombstone
 		obstacle_channel=2, -- tombstone
+		health=2,
+		init=function(self)
+			self.flipped=rnd()<0.5
+		end,
 		draw=function(self)
-			rectfill(self.x+0.5,self.y-2.5,self.x+6.5,self.y+5.5,6)
-			self:draw_outline(7)
+			sspr2(12,0,10,6,self.x-2,self.y+2,self.flipped)
+			if self.obstacle_channel>0 then
+				sspr2(ternary(self.health<2,6,0),0,6,7,self.x,self.y-1)
+			end
+		end,
+		on_hurt=function(self,entity)
+			self.invincibility_frames=3
+			self.health-=entity.damage
+			if self.health<=0 then
+				self.hurtbox_channel=0
+				self.obstacle_channel=0
+			end
 		end
 	},
 	tree={
@@ -131,6 +260,31 @@ local entity_classes={
 			rectfill(self.x+0.5,self.y-7.5,self.x+10.5,self.y+9.5,4)
 			self:draw_outline(9)
 		end
+	},
+	horizontal_fence={
+		width=9,
+		height=4,
+		hurtbox_channel=16, -- fence
+		obstacle_channel=16, -- fence
+		health=2,
+		draw=function(self)
+			sspr(40,0,11,7,self.x-1,self.y-3)
+		end,
+		on_hurt=function(self,entity)
+			self.invincibility_frames=3
+			self.health-=entity.damage
+			if self.health<=0 then
+				self:die()
+			end
+		end
+	},
+	vertical_fence={
+		extends="horizontal_fence",
+		width=3,
+		height=7,
+		draw=function(self)
+			sspr(62,0,3,7,self.x,self.y-1)
+		end
 	}
 }
 
@@ -139,10 +293,23 @@ function _init()
 	entities={}
 	new_entities={}
 	-- create initial entities
-	spawn_entity("player",50,50)
+	player=spawn_entity("player",5,61)
 	spawn_entity("tombstone",70,60)
 	spawn_entity("tree",60,80)
-	spawn_entity("witch",80,30)
+	spawn_entity("frog",80,80)
+	spawn_entity("frog",90,80)
+	spawn_entity("frog",90,90)
+	spawn_entity("frog",80,90)
+	spawn_entity("witch",114,61)
+	spawn_entity("horizontal_fence",30,40+28)
+	spawn_entity("horizontal_fence",38,40+28)
+	spawn_entity("horizontal_fence",46,40+28)
+	spawn_entity("vertical_fence",29,45)
+	spawn_entity("vertical_fence",29,52)
+	spawn_entity("vertical_fence",29,59)
+	spawn_entity("horizontal_fence",30,40)
+	spawn_entity("horizontal_fence",38,40)
+	spawn_entity("horizontal_fence",46,40)
 	-- add new entities to the game immediately
 	add_new_entities()
 end
@@ -193,8 +360,13 @@ function _update()
 end
 
 function _draw()
+	camera()
 	-- clear the screen
 	cls(0)
+	-- draw guidelines
+	color(1)
+	rect(0,0,127,127) -- bounding box
+	rect(2,25,125,102) -- bounding box
 	-- draw each entity
 	foreach(entities,function(entity)
 		entity:draw()
@@ -202,103 +374,115 @@ function _draw()
 end
 
 -- entity functions
-function spawn_entity(class_name,x,y,args)
-	-- create the basic entity
-	local entity={
-		class_name=class_name,
-		-- lifetime props
-		is_alive=true,
-		frames_alive=0,
-		frames_to_death=0,
-		-- hit props
-		hitbox_channel=0,
-		hurtbox_channel=0,
-		invincibility_frames=0,
-		-- collision props
-		collision_channel=0,
-		obstacle_channel=0,
-		-- spatial props
-		x=x or 0,
-		y=y or 0,
-		vx=0,
-		vy=0,
-		width=0,
-		height=0,
-		-- basic entity methods
-		init=noop,
-		update=function(self)
-			self:apply_velocity()
-		end,
-		apply_velocity=function(self)
-			local vx,vy=self.vx,self.vy
-			-- entities that don't collide with anything are real simple
-			if self.collision_channel<=0 then
-				self.x+=vx
-				self.y+=vy
-			-- otherwise we have a lot of work to do
-			elseif vx!=0 or vy!=0 then
-				-- move in small steps
-				local move_steps=ceil(max(abs(vx),abs(vy))/1.05)
-				local t
-				for t=1,move_steps do
-					if vx==self.vx then
-						self.x+=vx/move_steps
-					end
-					if vy==self.vy then
-						self.y+=vy/move_steps
-					end
-					-- check for collisions against other entities
-					local d
-					for d=1,#direction_attrs do
-						local dir=direction_attrs[d]
-						local axis,vel,size,mult=dir[2],dir[3],dir[4],dir[5]
-						local i
-						for i=1,#entities do
-							local entity=entities[i]
-							if band(self.collision_channel,entity.obstacle_channel)>0 and self!=entity and mult*self[vel]>=mult*entity[vel] then
-								-- they can collide, now check to see if there is overlap
-								local self_sub={}
-								self_sub.x=self.x+1.1
-								self_sub.y=self.y+1.1
-								self_sub.width=self.width-2.2
-								self_sub.height=self.height-2.2
-								self_sub[axis],self_sub[size]=self[axis]+ternary(mult>0,self[size]/2,0),self[size]/2
-								if rects_overlapping(
-									self_sub.x,self_sub.y,self_sub.width,self_sub.height,
-									entity.x,entity.y,entity.width,entity.height) then
-									-- there was a collision
-									self[axis],self[vel]=entity[axis]+ternary(mult<0,entity[size],-self[size]),entity[vel]
-									self:on_collide(dir[1],entity)
+function spawn_entity(class_name,x,y,args,skip_init)
+	local entity
+	local super_class_name=entity_classes[class_name].extends
+	if super_class_name then
+		entity=spawn_entity(super_class_name,x,y,args,true)
+	else
+		-- create the basic entity
+		entity={
+			-- lifetime props
+			is_alive=true,
+			frames_alive=0,
+			frames_to_death=0,
+			-- hit props
+			hitbox_channel=0,
+			hurtbox_channel=0,
+			invincibility_frames=0,
+			-- collision props
+			collision_channel=0,
+			obstacle_channel=0,
+			-- spatial props
+			x=x or 0,
+			y=y or 0,
+			vx=0,
+			vy=0,
+			width=1,
+			height=1,
+			-- basic entity methods
+			init=noop,
+			update=function(self)
+				self:apply_velocity()
+			end,
+			apply_velocity=function(self)
+				local vx,vy=self.vx,self.vy
+				-- entities that don't collide with anything are real simple
+				if self.collision_channel<=0 then
+					self.x+=vx
+					self.y+=vy
+				-- otherwise we have a lot of work to do
+				elseif vx!=0 or vy!=0 then
+					-- move in small steps
+					local move_steps=ceil(max(abs(vx),abs(vy))/1.05)
+					local t
+					for t=1,move_steps do
+						if vx==self.vx then
+							self.x+=vx/move_steps
+						end
+						if vy==self.vy then
+							self.y+=vy/move_steps
+						end
+						-- check for collisions against other entities
+						local d
+						for d=1,#direction_attrs do
+							local dir=direction_attrs[d]
+							local axis,vel,size,mult=dir[2],dir[3],dir[4],dir[5]
+							local i
+							for i=1,#entities do
+								local entity=entities[i]
+								if band(self.collision_channel,entity.obstacle_channel)>0 and self!=entity and mult*self[vel]>=mult*entity[vel] then
+									-- they can collide, now check to see if there is overlap
+									local self_sub={}
+									self_sub.x=self.x+1.1
+									self_sub.y=self.y+1.1
+									self_sub.width=self.width-2.2
+									self_sub.height=self.height-2.2
+									self_sub[axis],self_sub[size]=self[axis]+ternary(mult>0,self[size]/2,0),self[size]/2
+									if rects_overlapping(
+										self_sub.x,self_sub.y,self_sub.width,self_sub.height,
+										entity.x,entity.y,entity.width,entity.height) then
+										-- there was a collision
+										self[axis],self[vel]=entity[axis]+ternary(mult<0,entity[size],-self[size]),entity[vel]
+										self:on_collide(dir[1],entity)
+									end
 								end
 							end
 						end
 					end
 				end
-			end
-		end,
-		draw=function(self)
-			self:draw_outline(8)
-		end,
-		draw_outline=function(self,color)
-			rect(self.x+0.5,self.y+0.5,self.x+self.width-0.5,self.y+self.height-0.5,color or 8)
-		end,
-		-- death methods
-		die=function(self)
-			self:on_death()
-			self.is_alive=false
-		end,
-		despawn=function(self)
-			self.is_alive=false
-		end,
-		on_death=noop,
-		-- hit methods
-		on_hit=noop,
-		on_hurt=function(self)
-			self:die()
-		end,
-		-- collision methods
-		on_collide=noop
-	}
+			end,
+			draw=function(self)
+				self:draw_outline(8)
+			end,
+			draw_outline=function(self,color)
+				rect(self.x+0.5,self.y+0.5,self.x+self.width-0.5,self.y+self.height-0.5,color or 8)
+			end,
+			center_x=function(self)
+				return self.x+self.width/2
+			end,
+			center_y=function(self)
+				return self.y+self.height/2
+			end,
+			-- death methods
+			die=function(self)
+				self:on_death()
+				self.is_alive=false
+			end,
+			despawn=function(self)
+				self.is_alive=false
+			end,
+			on_death=noop,
+			-- hit methods
+			on_hit=noop,
+			on_hurt=function(self)
+				self:die()
+			end,
+			-- collision methods
+			on_collide=noop
+		}
+	end
+	entity.class_name=class_name
 	-- add class properties/methods onto it
 	local k,v
 	for k,v in pairs(entity_classes[class_name]) do
@@ -308,10 +492,12 @@ function spawn_entity(class_name,x,y,args)
 	for k,v in pairs(args or {}) do
 		entity[k]=v
 	end
-	-- initialize it
-	entity:init()
-	-- add it to the list of entities-to-be-added
-	add(new_entities,entity)
+	if not skip_init then
+		-- initialize it
+		entity:init()
+		-- add it to the list of entities-to-be-added
+		add(new_entities,entity)
+	end
 	-- return it
 	return entity
 end
@@ -327,6 +513,16 @@ end
 -- if condition is true return the second argument, otherwise the third
 function ternary(condition,if_true,if_false)
 	return condition and if_true or if_false
+end
+
+-- generates a random integer between min_val and max_val, inclusive
+function rnd_int(min_val,max_val)
+	return flr(rnd_float(min_val,max_val+1))
+end
+
+-- generates a random number between min_val and max_val
+function rnd_float(min_val,max_val)
+	return min_val+rnd(max_val-min_val)
 end
 
 function button_string_to_index(s)
@@ -351,6 +547,10 @@ end
 
 function btnp2(n)
 	return button_presses[button_string_to_index(n)]
+end
+
+function sspr2(sx,sy,sw,sh,x,y,fh,fv)
+	sspr(sx,sy,sw,sh,x+0.5,y+0.5,sw,sh,fh,fv)
 end
 
 -- round a number up to the nearest integer
@@ -432,12 +632,26 @@ function dir_to_vector(dir,mag)
 end
 
 __gfx__
+0666d002660000000000000000000000bbb000000005000500000050500000000000000000000000000000000000000000000000000000000000000000000000
+66666d662d6d000000000000bbb0000b1b1b00000505050505005050050050050050000000000000000000000000000000000000000000000000000000000000
+6ddd6d62d26d00000100000b1b1b0000bbbbb0000555555555005505055050050050000000000000000000000000000000000000000000000000000000000000
+66666d6d62dd010000001000bbbbb000b3bb3b000505050505005050050050050500000000000000000000000000000000000000000000000000000000000000
+6dd66d6d266d001111110000bbb3b00b00b303300505050505005000505050050005000000000000000000000000000000000000000000000000000000000000
+66666dd6626d01000000010b03b33000000030030555555555005505550550050050000000000000000000000000000000000000000000000000000000000000
+66666d6666dd00000000000000000000000000000505050505005050505050050050000000000000000000000000000000000000000000000000000000000000
+0a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0a0aaaa999aaaa000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+09000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+09000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+09000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00700700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00077000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00077000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00700700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
@@ -542,24 +756,10 @@ __gfx__
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000123
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004567
+000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000089ab
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000cdef
 
 __gff__
 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
