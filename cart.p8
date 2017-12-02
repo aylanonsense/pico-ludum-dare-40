@@ -1,15 +1,281 @@
 pico-8 cartridge // http://www.pico-8.com
 version 8
 __lua__
+--[[
+hurtbox channels
+	1: player
+
+collision channels
+	1: player
+]]
+
+-- useful no-op function
+function noop() end
+
+-- global collision vars
+local directions={
+	-- direction_name,axis,size,increment
+	{"left","x","vx","width",-1},
+	{"right","x","vx","width",1},
+	{"bottom","y","vy","height",-1},
+	{"top","y","vy","height",1}
+}
+
+-- global entity vars
+local entities
+local new_entities
+
+-- entity classes
+local entity_classes={
+	player={
+		width=10,
+		height=15,
+		hurtbox_channel=1, -- player
+		collision_channel=1, -- player
+		update=function(self)
+			self.vx=ternary(btn(1),1,0)-ternary(btn(0),1,0)
+			self.vy=ternary(btn(3),1,0)-ternary(btn(2),1,0)
+			self:apply_velocity()
+		end
+	},
+	witch={
+		width=5,
+		height=5,
+		hitbox_channel=0, -- player
+		obstacle_channel=1, -- player
+	}
+}
 
 function _init()
+	-- reset vars
+	entities={}
+	new_entities={}
+	-- create initial entities
+	spawn_entity("player",50,50)
+	spawn_entity("witch",70,60)
+	-- add new entities to the game immediately
+	add_new_entities()
 end
 
 function _update()
+	-- update each entity
+	foreach(entities,function(entity)
+		if decrement_counter_prop(entity,"frames_to_death") then
+			entity:die()
+		else
+			entity:update()
+			increment_counter_prop(entity,"frames_alive")
+			decrement_counter_prop(entity,"invincibility_frames")
+		end
+	end)
+	-- check for hits
+	local i
+	for i=1,#entities do
+		local e1=entities[i]
+		local j
+		for j=1,#entities do
+			local e2=entities[j]
+			if i!=j and band(e1.hitbox_channel,e2.hurtbox_channel)>0 then
+				if rects_overlapping(e1.x,e1.y,e1.width,e1.height,e2.x,e2.y,e2.width,e2.height) then
+					e1:on_hit(e2)
+					if e2.invincibility_frames<=0 then
+						e2:on_hurt(e1)
+					end
+				end
+			end
+		end
+	end
+	-- add new entities to the game
+	add_new_entities()
+	-- remove dead entities from the game
+	filter_list(entities,function(entity)
+		return entity.is_alive
+	end)
 end
 
 function _draw()
+	-- clear the screen
 	cls(0)
+	-- draw each entity
+	foreach(entities,function(entity)
+		entity:draw()
+	end)
+end
+
+-- entity functions
+function spawn_entity(class_name,x,y,args)
+	-- create the basic entity
+	local entity={
+		class_name=class_name,
+		-- lifetime props
+		is_alive=true,
+		frames_alive=0,
+		frames_to_death=0,
+		-- hit props
+		hitbox_channel=0,
+		hurtbox_channel=0,
+		invincibility_frames=0,
+		-- collision props
+		collision_channel=0,
+		obstacle_channel=0,
+		-- spatial props
+		x=x or 0,
+		y=y or 0,
+		vx=0,
+		vy=0,
+		width=0,
+		height=0,
+		-- basic entity methods
+		init=noop,
+		update=function(self)
+			self:apply_velocity()
+		end,
+		apply_velocity=function(self)
+			local vx,vy=self.vx,self.vy
+			-- entities that don't collide with anything are real simple
+			if self.collision_channel<=0 then
+				self.x+=vx
+				self.y+=vy
+			-- otherwise we have a lot of work to do
+			elseif vx!=0 or vy!=0 then
+				-- move in small steps
+				local move_steps=ceil(max(abs(vx),abs(vy))/1.05)
+				local t
+				for t=1,move_steps do
+					if vx==self.vx then
+						self.x+=vx/move_steps
+					end
+					if vy==self.vy then
+						self.y+=vy/move_steps
+					end
+					-- check for collisions against other entities
+					local d
+					for d=1,#directions do
+						local dir=directions[d]
+						local axis,vel,size,mult=dir[2],dir[3],dir[4],dir[5]
+						local i
+						for i=1,#entities do
+							local entity=entities[i]
+							if band(self.collision_channel,entity.obstacle_channel)>0 and self!=entity and mult*self[vel]>=mult*entity[vel] then
+								-- they can collide, now check to see if there is overlap
+								local self_sub={}
+								self_sub.x=self.x+1.1
+								self_sub.y=self.y+1.1
+								self_sub.width=self.width-2.2
+								self_sub.height=self.height-2.2
+								self_sub[axis],self_sub[size]=self[axis]+ternary(mult>0,self[size]/2,0),self[size]/2
+								if rects_overlapping(
+									self_sub.x,self_sub.y,self_sub.width,self_sub.height,
+									entity.x,entity.y,entity.width,entity.height) then
+									-- there was a collision
+									self[axis],self[vel]=entity[axis]+ternary(mult<0,entity[size],-self[size]),entity[vel]
+									self:on_collide(dir[1],entity)
+								end
+							end
+						end
+					end
+				end
+			end
+		end,
+		draw=function(self)
+			rect(self.x+0.5,self.y+0.5,self.x+self.width-0.5,self.y+self.height-0.5,8)
+			pset(self.x+0.5,self.y+0.5,15)
+		end,
+		-- death methods
+		die=function(self)
+			self:on_death()
+			self.is_alive=false
+		end,
+		despawn=function(self)
+			self.is_alive=false
+		end,
+		on_death=noop,
+		-- hit methods
+		on_hit=noop,
+		on_hurt=function(self)
+			self:die()
+		end,
+		-- collision methods
+		on_collide=noop
+	}
+	-- add class properties/methods onto it
+	local k,v
+	for k,v in pairs(entity_classes[class_name]) do
+		entity[k]=v
+	end
+	-- add properties onto it from the arguments
+	for k,v in pairs(args or {}) do
+		entity[k]=v
+	end
+	-- initialize it
+	entity:init()
+	-- add it to the list of entities-to-be-added
+	add(new_entities,entity)
+	-- return it
+	return entity
+end
+
+function add_new_entities()
+	foreach(new_entities,function(entity)
+		add(entities,entity)
+	end)
+	new_entities={}
+end
+
+-- helper methods
+-- if condition is true return the second argument, otherwise the third
+function ternary(condition,if_true,if_false)
+	return condition and if_true or if_false
+end
+
+-- round a number up to the nearest integer
+function ceil(n)
+	return -flr(-n)
+end
+
+-- increment a counter, wrapping to 20000 if it risks overflowing
+function increment_counter(n)
+	if n>32000 then
+		return n-12000
+	end
+	return n+1
+end
+
+-- increment_counter on a property of an object
+function increment_counter_prop(obj,k)
+	obj[k]=increment_counter(obj[k])
+end
+
+-- decrement a counter but not below 0
+function decrement_counter(n)
+	return max(0,n-1)
+end
+
+-- decrement_counter on a property of an object, returns true when it reaches 0
+function decrement_counter_prop(obj,k)
+	if obj[k]>0 then
+		obj[k]=decrement_counter(obj[k])
+		return obj[k]<=0
+	end
+	return false
+end
+
+-- check for aabb overlap
+function rects_overlapping(x1,y1,w1,h1,x2,y2,w2,h2)
+	return x1+w1>x2 and x2+w2>x1 and y1+h1>y2 and y2+h2>y1
+end
+
+-- filters list to contain only entries where func is truthy
+function filter_list(list,func)
+	local num_deleted,i=0 -- ,nil
+	for i=1,#list do
+		if not func(list[i]) then
+			list[i]=nil
+			num_deleted+=1
+		else
+			list[i-num_deleted],list[i]=list[i],nil
+		end
+	end
 end
 
 __gfx__
