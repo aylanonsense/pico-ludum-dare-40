@@ -30,20 +30,34 @@ local direction_attrs={
 	{"top","y","vy","height",1}
 }
 
+-- global scene vars
+local scenes
+local scene
+local scene_frame
+
+-- global input vars
+local buttons={}
+local button_presses={}
+
 -- global entity vars
 local entities
 local new_entities
 local player
 
--- global input vars
-local buttons={}
-local button_presses={}
+-- global list of curses
+local player_curses
+local curses={
+	{"half_speed","weighed down by guilt",{"you walk at half speed"}},
+	{"floating_heart","heart on your sleeve",{"a heart circles around you.", "if it takes damage,","you take damage."}},
+	{"no_left","right-footed",{"you can't turn left"}}
+}
 
 -- entity classes
 local entity_classes={
 	player={
 		width=7,
 		height=7,
+		health=3,
 		hurtbox_channel=1, -- player
 		obstacle_channel=1, -- player
 		collision_channel=2+4+16, -- tombstones + trees + fences
@@ -57,7 +71,6 @@ local entity_classes={
 		dodge_roll_anim=0,
 		dodge_roll_end_anim=0,
 		dodge_roll_detection=5,
-		health=5,
 		weapons={"mace","javelin"},
 		weapon_index=1,
 		update=function(self)
@@ -134,6 +147,9 @@ local entity_classes={
 		draw=function(self)
 			rectfill(self.x+0.5,self.y-4.5,self.x+6.5,self.y+6.5,9)
 			self:draw_outline(10)
+		end,
+		on_death=function(self)
+			init_scene("death")
 		end
 	},
 	mace_attack={
@@ -141,7 +157,6 @@ local entity_classes={
 		height=7,
 		frames_to_death=1,
 		hitbox_channel=2+4+8+16, -- witches + minions + tombstones + fences
-		damage=1,
 		init=function(self)
 			local x,y=dir_to_vector(self.slash_dir,5)
 			self.x+=x
@@ -153,7 +168,6 @@ local entity_classes={
 		height=5,
 		hitbox_channel=2+4+8, -- witches + minions + tombstones
 		collision_channel=4+16, -- trees + fences
-		damage=1,
 		update=function(self)
 			self.vx,self.vy=dir_to_vector(self.move_dir,2)
 			self:apply_velocity()
@@ -181,11 +195,48 @@ local entity_classes={
 	witch={
 		width=10,
 		height=8,
+		health=3,
 		hitbox_channel=1, -- player
 		hurtbox_channel=2, -- witch
+		spell=nil,
+		spell_startup_frames=0,
+		spell_recovery_frames=0,
+		spell_cooldown_frames=10,
+		update=function(self)
+			-- start casting a spell
+			if decrement_counter_prop(self,"spell_cooldown_frames") then
+				-- local spells={"summon_frogs","raise_skeletons","lob_blasts","shoot_bats"}
+				self.spell="summon_frogs"
+				self.spell_startup_frames=40
+			end
+			-- cast a spell
+			if decrement_counter_prop(self,"spell_startup_frames") then
+				if self.spell=="summon_frogs" then
+					spawn_entity("frog",self.x-5,self.y-8)
+					spawn_entity("frog",self.x-5,self.y+8)
+					spawn_entity("frog",self.x-5,self.y)
+				end
+				self.spell_recovery_frames=30
+			end
+			-- cooldown between spell casts
+			if decrement_counter_prop(self,"spell_recovery_frames") then
+				self.spell_cooldown_frames=rnd_int(50,100)
+			end
+			self:apply_velocity()
+		end,
 		draw=function(self)
-			rectfill(self.x+0.5,self.y-2.5,self.x+9.5,self.y+7.5,2)
-			self:draw_outline(13)
+			-- rectfill(self.x+0.5,self.y-2.5,self.x+9.5,self.y+7.5,2)
+			-- self:draw_outline(7)
+			if self.spell_startup_frames>0 then
+				if self.spell=="summon_frogs" then
+					color(3)
+				end
+				circ(self.x,self.y,self.spell_startup_frames/2)
+			end
+			sspr2(ternary(self.spell_startup_frames>0 or self.spell_recovery_frames>0,96,86),0,10,11,self.x,self.y-3)
+		end,
+		on_death=function(self)
+			init_scene("curse")
 		end
 	},
 	frog={
@@ -197,9 +248,7 @@ local entity_classes={
 		obstacle_channel=8, -- minion
 		collision_channel=2+4+8+16, -- tombstones + trees + minions + fences
 		hop_frames=0,
-		init=function(self)
-			self.frames_to_hop=rnd_int(35,50)
-		end,
+		frames_to_hop=1,
 		update=function(self)
 			decrement_counter_prop(self,"hop_frames")
 			if decrement_counter_prop(self,"frames_to_hop") then
@@ -207,7 +256,7 @@ local entity_classes={
 				local dy=mid(-100,player:center_y()-self:center_y(),100)
 				local dist=sqrt(dx*dx+dy*dy)
 				self.vx,self.vy=dx/dist,dy/dist
-				self.frames_to_hop=rnd_int(35,50)
+				self.frames_to_hop=rnd_int(35,60)
 				self.hop_frames=rnd_int(8,12)
 				self.is_facing_right=self.vx>0
 			end
@@ -219,21 +268,14 @@ local entity_classes={
 		draw=function(self)
 			-- self:draw_outline(8)
 			sspr2(ternary(self.hop_frames>0,31,22),0,9,6,self.x-1,self.y,self.is_facing_right)
-		end,
-		on_hurt=function(self,entity)
-			self.invincibility_frames=3
-			self.health-=entity.damage
-			if self.health<=0 then
-				self:die()
-			end
 		end
 	},
 	tombstone={
 		width=6,
 		height=6,
+		health=2,
 		hurtbox_channel=8, -- tombstone
 		obstacle_channel=2, -- tombstone
-		health=2,
 		init=function(self)
 			self.flipped=rnd()<0.5
 		end,
@@ -241,14 +283,6 @@ local entity_classes={
 			sspr2(12,0,10,6,self.x-2,self.y+2,self.flipped)
 			if self.obstacle_channel>0 then
 				sspr2(ternary(self.health<2,6,0),0,6,7,self.x,self.y-1)
-			end
-		end,
-		on_hurt=function(self,entity)
-			self.invincibility_frames=3
-			self.health-=entity.damage
-			if self.health<=0 then
-				self.hurtbox_channel=0
-				self.obstacle_channel=0
 			end
 		end
 	},
@@ -264,18 +298,11 @@ local entity_classes={
 	horizontal_fence={
 		width=9,
 		height=4,
+		health=2,
 		hurtbox_channel=16, -- fence
 		obstacle_channel=16, -- fence
-		health=2,
 		draw=function(self)
-			sspr(40,0,11,7,self.x-1,self.y-3)
-		end,
-		on_hurt=function(self,entity)
-			self.invincibility_frames=3
-			self.health-=entity.damage
-			if self.health<=0 then
-				self:die()
-			end
+			sspr(ternary(self.health<2,51,40),0,11,7,self.x-1,self.y-3)
 		end
 	},
 	vertical_fence={
@@ -283,44 +310,96 @@ local entity_classes={
 		width=3,
 		height=7,
 		draw=function(self)
-			sspr(62,0,3,7,self.x,self.y-1)
+			sspr(ternary(self.health<2,65,62),0,3,7,self.x,self.y-1)
 		end
 	}
 }
 
+-- basic pico-8 methods
 function _init()
-	-- reset vars
-	entities={}
-	new_entities={}
-	-- create initial entities
-	player=spawn_entity("player",5,61)
-	spawn_entity("tombstone",70,60)
-	spawn_entity("tree",60,80)
-	spawn_entity("frog",80,80)
-	spawn_entity("frog",90,80)
-	spawn_entity("frog",90,90)
-	spawn_entity("frog",80,90)
-	spawn_entity("witch",114,61)
-	spawn_entity("horizontal_fence",30,40+28)
-	spawn_entity("horizontal_fence",38,40+28)
-	spawn_entity("horizontal_fence",46,40+28)
-	spawn_entity("vertical_fence",29,45)
-	spawn_entity("vertical_fence",29,52)
-	spawn_entity("vertical_fence",29,59)
-	spawn_entity("horizontal_fence",30,40)
-	spawn_entity("horizontal_fence",38,40)
-	spawn_entity("horizontal_fence",46,40)
-	-- add new entities to the game immediately
-	add_new_entities()
+	-- set up the scenes
+	scenes={
+		title={init_title,update_title,draw_title},
+		game={init_game,update_game,draw_game},
+		curse={init_curse,update_curse,draw_curse},
+		death={init_death,update_death,draw_death}
+	}
+	-- initialize the starting scene
+	init_scene("title")
+	init_scene("game")
 end
 
 function _update()
+	scene_frame=increment_counter(scene_frame)
 	-- keep track of when inputs are pressed
 	local i
 	for i=0,5 do
 		button_presses[i]=btn(i) and not buttons[i]
 		buttons[i]=btn(i)
 	end
+	-- update scene
+	scene[2]()
+end
+
+function _draw()
+	camera()
+	-- clear the screen
+	cls(0)
+	-- draw guidelines
+	rect(0,0,127,127,1) -- bounding box
+	rect(2,25,125,102,1) -- bounding box
+	rect(63,0,64,127,1)
+	-- draw scene
+	scene[3]()
+end
+
+-- title scene methods
+function init_title()
+	player_curses={}
+	shuffle_list(curses)
+end
+
+function update_title()
+	if scene_frame>20 and btnp2("z") then
+		init_scene("game")
+	end
+end
+
+function draw_title()
+	color(13)
+	if scene_frame%40<30 then
+		print("press z to continue",26,108)
+	end
+end
+
+-- game scene methods
+function init_game()
+	-- reset vars
+	entities={}
+	new_entities={}
+	-- create initial entities
+	player=spawn_entity("player",5,61)
+	-- spawn_entity("tombstone",70,60)
+	-- spawn_entity("tree",60,80)
+	-- spawn_entity("frog",80,80)
+	-- spawn_entity("frog",90,80)
+	-- spawn_entity("frog",90,90)
+	-- spawn_entity("frog",80,90)
+	spawn_entity("witch",114,61)
+	-- spawn_entity("horizontal_fence",30,40+28)
+	-- spawn_entity("horizontal_fence",38,40+28)
+	-- spawn_entity("horizontal_fence",46,40+28)
+	-- spawn_entity("vertical_fence",29,45)
+	-- spawn_entity("vertical_fence",29,52)
+	-- spawn_entity("vertical_fence",29,59)
+	-- spawn_entity("horizontal_fence",30,40)
+	-- spawn_entity("horizontal_fence",38,40)
+	-- spawn_entity("horizontal_fence",46,40)
+	-- add new entities to the game immediately
+	add_new_entities()
+end
+
+function update_game()
 	-- update each entity
 	foreach(entities,function(entity)
 		if decrement_counter_prop(entity,"frames_to_death") then
@@ -332,6 +411,7 @@ function _update()
 		end
 	end)
 	-- check for hits
+	local i
 	for i=1,#entities do
 		local e1=entities[i]
 		local j
@@ -341,7 +421,12 @@ function _update()
 				if rects_overlapping(e1.x,e1.y,e1.width,e1.height,e2.x,e2.y,e2.width,e2.height) then
 					e1:on_hit(e2)
 					if e2.invincibility_frames<=0 then
+						e2.health-=e1.damage
+						e2.invincibility_frames=5
 						e2:on_hurt(e1)
+						if e2.health<=0 then
+							e2:die()
+						end
 					end
 				end
 			end
@@ -359,18 +444,69 @@ function _update()
 	end)
 end
 
-function _draw()
-	camera()
-	-- clear the screen
-	cls(0)
-	-- draw guidelines
-	color(1)
-	rect(0,0,127,127) -- bounding box
-	rect(2,25,125,102) -- bounding box
+function draw_game()
 	-- draw each entity
 	foreach(entities,function(entity)
 		entity:draw()
 	end)
+	-- draw ui
+	color(1)
+	rectfill(0,0,127,16)
+	rectfill(0,111,127,127)
+	-- draw player health
+	local i
+	for i=1,3 do
+		sspr(ternary(player.health<i,77,68),0,9,8,10*i+40,115)
+	end
+end
+
+-- curse scene methods
+function init_curse()
+	add(player_curses,curses[#player_curses+1])
+end
+
+function update_curse()
+	if scene_frame>20 and btnp2("z") then
+		init_scene("game")
+	end
+end
+
+function draw_curse()
+	color(13)
+	print("with her dying breath,",20,8)
+	print("the witch lays a curse on you!",4,15)
+	if scene_frame%40<30 then
+		print("press z to continue",26,108)
+	end
+	rect(54,43,74,63)
+	color(0)
+	rectfill(57,43,71,63)
+	rectfill(54,46,74,60)
+	local curse=player_curses[#player_curses]
+	color(6)
+	print(curse[2],64-2*#curse[2],34)
+	local i
+	for i=1,#curse[3] do
+		print(curse[3][i],64-2*#curse[3][i],61+7*i)
+	end
+	rect(56,45,72,61,8)
+end
+
+-- death scene methods
+function init_death()
+end
+
+function update_death()
+	if scene_frame>20 and btnp2("z") then
+		init_scene("title")
+	end
+end
+
+function draw_death()
+	color(13)
+	if scene_frame%40<30 then
+		print("press z to continue",26,108)
+	end
 end
 
 -- entity functions
@@ -387,6 +523,8 @@ function spawn_entity(class_name,x,y,args,skip_init)
 			frames_alive=0,
 			frames_to_death=0,
 			-- hit props
+			health=1,
+			damage=1,
 			hitbox_channel=0,
 			hurtbox_channel=0,
 			invincibility_frames=0,
@@ -475,9 +613,7 @@ function spawn_entity(class_name,x,y,args,skip_init)
 			on_death=noop,
 			-- hit methods
 			on_hit=noop,
-			on_hurt=function(self)
-				self:die()
-			end,
+			on_hurt=noop,
 			-- collision methods
 			on_collide=noop
 		}
@@ -509,7 +645,22 @@ function add_new_entities()
 	new_entities={}
 end
 
+-- scene functions
+function init_scene(s)
+	scene,scene_frame=scenes[s],0
+	scene[1]()
+end
+
 -- helper methods
+function player_has_curse(s)
+	local i
+	for i=1,#player_curses do
+		if player_curses[i][1]==s then
+			return true
+		end
+	end
+end
+
 -- if condition is true return the second argument, otherwise the third
 function ternary(condition,if_true,if_false)
 	return condition and if_true or if_false
@@ -615,6 +766,24 @@ function filter_list(list,func)
 	end
 end
 
+-- shuffles a list randomly
+function shuffle_list(list)
+	local i
+	for i=1,#list do
+		local j=rnd_int(i,#list)
+		list[i],list[j]=list[j],list[i]
+	end
+end
+
+function index_of(list,val)
+	local i
+	for i=1,#list do
+		if list[i]==val then
+			return i
+		end
+	end
+end
+
 -- takes in a string direction and returns a x,y vector
 function dir_to_vector(dir,mag)
 	mag=mag or 1
@@ -632,17 +801,17 @@ function dir_to_vector(dir,mag)
 end
 
 __gfx__
-0666d002660000000000000000000000bbb000000005000500000050500000000000000000000000000000000000000000000000000000000000000000000000
-66666d662d6d000000000000bbb0000b1b1b00000505050505005050050050050050000000000000000000000000000000000000000000000000000000000000
-6ddd6d62d26d00000100000b1b1b0000bbbbb0000555555555005505055050050050000000000000000000000000000000000000000000000000000000000000
-66666d6d62dd010000001000bbbbb000b3bb3b000505050505005050050050050500000000000000000000000000000000000000000000000000000000000000
-6dd66d6d266d001111110000bbb3b00b00b303300505050505005000505050050005000000000000000000000000000000000000000000000000000000000000
-66666dd6626d01000000010b03b33000000030030555555555005505550550050050000000000000000000000000000000000000000000000000000000000000
-66666d6666dd00000000000000000000000000000505050505005050505050050050000000000000000000000000000000000000000000000000000000000000
-0a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0a0aaaa999aaaa000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0a000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0666d002660000000000000000000000bbb000000005000500000050500000000000088808880055505550000000dd00000000dd000000000000000000000000
+66666d662d6d000000000000bbb0000b1b1b00000505050505005050050050050050888888ee855005005500000dd00000000dd0000000000000000000000000
+6ddd6d62d26d00000100000b1b1b0000bbbbb0000555555555005505055050050050888888ee85000000050000dddd000000dddd000000000000000000000000
+66666d6d62dd010000001000bbbbb000b3bb3b000505050505005050050050050500888888ee8500000005000002200000000220020000000000000000000000
+6dd66d6d266d001111110000bbb3b00b00b303300505050505005000505050050005088888880050000050000042440002dd42440d0000000000000000000000
+66666dd6626d01000000010b03b33000000030030555555555005505550550050050008888800005000500000dd4dd00000dd4ddd00000000000000000000000
+66666d6666dd0000000000000000000000000000050505050500505050505005005000088800000050500000d2dddd0000dddddd000000000000000000000000
+0a00000000000000000000000000000000000000000000000000000000000000000000008000000005000044442dd4454444ddd4450000000000000000000000
+0a0aaaa999aaaa000000000000000000000000000000000000000000000000000000000000000000000000055ddd4454055ddd44540000000000000000000000
+0a0000000000000000000000000000000000000000000000000000000000000000000000000000000000000055dd04450055dd04450000000000000000000000
+0a0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000d000000000d000000000000000000000000000
 09000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 09000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 09000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
