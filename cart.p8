@@ -4,16 +4,22 @@ __lua__
 --[[
 hurtbox channels
 	1: player
+	2: witch
+	4: minions
+	8: tombstones
 
-collision channels
+obstacle channels
 	1: player
+	2: tombstones
+	4: trees
 ]]
 
 -- useful no-op function
 function noop() end
 
 -- global collision vars
-local directions={
+local directions={"right","up","down","left"}
+local direction_attrs={
 	-- direction_name,axis,size,increment
 	{"left","x","vx","width",-1},
 	{"right","x","vx","width",1},
@@ -25,24 +31,106 @@ local directions={
 local entities
 local new_entities
 
+-- global input vars
+local buttons={}
+local button_presses={}
+
 -- entity classes
 local entity_classes={
 	player={
-		width=10,
-		height=15,
+		width=7,
+		height=7,
 		hurtbox_channel=1, -- player
-		collision_channel=1, -- player
+		obstacle_channel=1, -- player
+		collision_channel=2+4, -- tombstones + trees
+		facing_dir="right",
+		move_dir=nil,
+		javelin_throw_anim=0,
+		javelin_throw_cooldown=0,
 		update=function(self)
-			self.vx=ternary(btn(1),1,0)-ternary(btn(0),1,0)
-			self.vy=ternary(btn(3),1,0)-ternary(btn(2),1,0)
+			decrement_counter_prop(self,"javelin_throw_anim")
+			decrement_counter_prop(self,"javelin_throw_cooldown")
+			-- switch move direction when a button pressed
+			foreach(directions,function(dir)
+				if btnp2(dir) then
+					self.move_dir=dir
+				end
+			end)
+			-- stop moving when the button is released
+			if self.move_dir and not btn2(self.move_dir) then
+				self.move_dir=nil
+			end
+			-- switch move direction to a held button
+			if not self.move_dir then
+				foreach(directions,function(dir)
+					if btn2(dir) then
+						self.move_dir=dir
+					end
+				end)
+			end
+			-- no moving during an animation
+			if self.javelin_throw_anim>0 then
+				self.vx,self.vy=0,0
+			else
+				-- face the direction of movement
+				if self.move_dir then
+					self.facing_dir=self.move_dir
+				end
+				-- move in the movement direction
+				self.vx,self.vy=dir_to_vector(self.move_dir)
+			end
+			-- move the character
+			self:apply_velocity()
+			-- throw a javelin
+			if btnp2("z") and self.javelin_throw_cooldown<=0 then
+				self.javelin_throw_anim=10
+				self.javelin_throw_cooldown=30
+				spawn_entity("javelin",self.x+2,self.y-2,{move_dir=self.facing_dir})
+			end
+		end,
+		draw=function(self)
+			rectfill(self.x-0.5,self.y-4.5,self.x+7.5,self.y+6.5,9)
+			self:draw_outline(10)
+		end
+	},
+	javelin={
+		width=3,
+		height=3,
+		hitbox_channel=2+4+8, -- witches, minions, tombstones
+		collision_channel=4, -- trees
+		update=function(self)
+			self.vx,self.vy=dir_to_vector(self.move_dir,2)
 			self:apply_velocity()
 		end
 	},
 	witch={
-		width=5,
-		height=5,
-		hitbox_channel=0, -- player
-		obstacle_channel=1, -- player
+		width=10,
+		height=8,
+		hitbox_channel=1, -- player
+		hurtbox_channel=2, -- witch
+		draw=function(self)
+			rectfill(self.x+0.5,self.y-2.5,self.x+9.5,self.y+7.5,2)
+			self:draw_outline(13)
+		end
+	},
+	tombstone={
+		width=7,
+		height=6,
+		hurtbox_channel=8, -- tombstone
+		obstacle_channel=2, -- tombstone
+		draw=function(self)
+			rectfill(self.x+0.5,self.y-2.5,self.x+6.5,self.y+5.5,6)
+			self:draw_outline(7)
+		end
+	},
+	tree={
+		width=11,
+		height=10,
+		obstacle_channel=4, -- tree
+		draw=function(self)
+			rectfill(self.x+0.5,self.y-7.5,self.x+10.5,self.y+9.5,4)
+			self:draw_outline(9)
+		end
 	}
 }
 
@@ -52,12 +140,20 @@ function _init()
 	new_entities={}
 	-- create initial entities
 	spawn_entity("player",50,50)
-	spawn_entity("witch",70,60)
+	spawn_entity("tombstone",70,60)
+	spawn_entity("tree",60,80)
+	spawn_entity("witch",80,30)
 	-- add new entities to the game immediately
 	add_new_entities()
 end
 
 function _update()
+	-- keep track of when inputs are pressed
+	local i
+	for i=0,5 do
+		button_presses[i]=btn(i) and not buttons[i]
+		buttons[i]=btn(i)
+	end
 	-- update each entity
 	foreach(entities,function(entity)
 		if decrement_counter_prop(entity,"frames_to_death") then
@@ -69,7 +165,6 @@ function _update()
 		end
 	end)
 	-- check for hits
-	local i
 	for i=1,#entities do
 		local e1=entities[i]
 		local j
@@ -90,6 +185,10 @@ function _update()
 	-- remove dead entities from the game
 	filter_list(entities,function(entity)
 		return entity.is_alive
+	end)
+	-- sort entities for drawing
+	sort_list(entities,function(entity1,entity2)
+		return entity1.y>entity2.y
 	end)
 end
 
@@ -150,8 +249,8 @@ function spawn_entity(class_name,x,y,args)
 					end
 					-- check for collisions against other entities
 					local d
-					for d=1,#directions do
-						local dir=directions[d]
+					for d=1,#direction_attrs do
+						local dir=direction_attrs[d]
 						local axis,vel,size,mult=dir[2],dir[3],dir[4],dir[5]
 						local i
 						for i=1,#entities do
@@ -178,8 +277,10 @@ function spawn_entity(class_name,x,y,args)
 			end
 		end,
 		draw=function(self)
-			rect(self.x+0.5,self.y+0.5,self.x+self.width-0.5,self.y+self.height-0.5,8)
-			pset(self.x+0.5,self.y+0.5,15)
+			self:draw_outline(8)
+		end,
+		draw_outline=function(self,color)
+			rect(self.x+0.5,self.y+0.5,self.x+self.width-0.5,self.y+self.height-0.5,color or 8)
 		end,
 		-- death methods
 		die=function(self)
@@ -228,6 +329,30 @@ function ternary(condition,if_true,if_false)
 	return condition and if_true or if_false
 end
 
+function button_string_to_index(s)
+	if s=="right" then
+		return 1
+	elseif s=="left" then
+		return 0
+	elseif s=="down" then
+		return 3
+	elseif s=="up" then
+		return 2
+	elseif s=="z" then
+		return 4
+	elseif s=="x" then
+		return 5
+	end
+end
+
+function btn2(n)
+	return buttons[button_string_to_index(n)]
+end
+
+function btnp2(n)
+	return button_presses[button_string_to_index(n)]
+end
+
 -- round a number up to the nearest integer
 function ceil(n)
 	return -flr(-n)
@@ -265,6 +390,18 @@ function rects_overlapping(x1,y1,w1,h1,x2,y2,w2,h2)
 	return x1+w1>x2 and x2+w2>x1 and y1+h1>y2 and y2+h2>y1
 end
 
+-- sorts list (inefficiently) based on func
+function sort_list(list,func)
+	local i
+	for i=1,#list do
+		local j=i
+		while j>1 and func(list[j-1],list[j]) do
+			list[j],list[j-1]=list[j-1],list[j]
+			j-=1
+		end
+	end
+end
+
 -- filters list to contain only entries where func is truthy
 function filter_list(list,func)
 	local num_deleted,i=0 -- ,nil
@@ -275,6 +412,22 @@ function filter_list(list,func)
 		else
 			list[i-num_deleted],list[i]=list[i],nil
 		end
+	end
+end
+
+-- takes in a string direction and returns a x,y vector
+function dir_to_vector(dir,mag)
+	mag=mag or 1
+	if dir=="left" then
+		return -mag,0
+	elseif dir=="right" then
+		return mag,0
+	elseif dir=="up" then
+		return 0,-mag
+	elseif dir=="down" then
+		return 0,mag
+	else
+		return 0,0
 	end
 end
 
