@@ -29,6 +29,12 @@ local direction_attrs={
 	{"bottom","y","vy","height",-1},
 	{"top","y","vy","height",1}
 }
+local clockwise_dirs={
+	left="up",
+	up="right",
+	right="down",
+	down="left"
+}
 
 -- global scene vars
 local scenes
@@ -49,9 +55,25 @@ local player
 -- global list of curses
 local player_curses
 local curses={
-	{"half_speed","weighed down by guilt",{"you walk at half speed"}},
-	{"floating_heart","heart on your sleeve",{"a heart circles around you.", "if it takes damage,","you take damage."}},
-	{"no_left","right-footed",{"you can't turn left"}}
+	{"medium","reluctant medium",{"whenever you destroy a","tombstone you raise","a skeleton."}},
+	{"doppleganger","doppleganger",{"there are two of you."}},
+	{"slow-clear","constant daze",{"the world swirls around you."}},
+	{"crab-walk","crab-like tendencies",{"you walk and","attack sideways."}},
+	{"weakness","weakness",{"your attacks deal","less damage."}},
+	{"frog-summons","amphibian attraction",{"whenever you attack","you summon a frog."}},
+	{"threes","threes",{"you attack in threes."}},
+	{"hallucinations","hallucinations",{"you see things","that aren't there."}},
+	{"vertigo","extreme vertigo",{"you are constantly dizzy."}},
+	{"gigantic","excessive growth",{"you are twice as big and","move at half speed."}},
+	{"tele-on-hit","unstable structure",{"whenever you take damage","you teleport to a","random location."}},
+	{"near-sighted","clouded eyes",{"your eyesight is limited"}},
+	{"invisibility","hidden from mortal eyes",{"you are invisible."}},
+	{"perma-move","eternal unrest",{"you can't stop moving."}},
+	{"high-speed","ludicrous speed",{"you move 5x faster than normal."}},
+	{"no-left","sinistrophobia",{"you can't turn left."}},
+
+
+	-- {"floating-heart","heart on your sleeve",{"a heart circles around you.", "if it takes damage,","you take damage."}},
 }
 
 -- entity classes
@@ -60,10 +82,10 @@ local entity_classes={
 		width=7,
 		height=7,
 		health=3,
-		hurtbox_channel=1, -- player
 		obstacle_channel=1, -- player
-		collision_channel=2+4+16, -- tombstones + trees + fences
+		collision_channel=1+2+4+16, -- player + tombstones + trees + fences
 		facing_dir="right",
+		true_facing_dir="right",
 		move_dir=nil,
 		sword_attack_anim=0,
 		sword_attack_cooldown=0,
@@ -75,6 +97,14 @@ local entity_classes={
 		dodge_roll_detection=5,
 		weapons={"sword","javelin"},
 		weapon_index=1,
+		keep_in_bounds=true,
+		auto_attacks=0,
+		init=function(self)
+			if player_has_curse("gigantic") then
+				self.width*=2
+				self.height*=2
+			end
+		end,
 		update=function(self)
 			decrement_counter_prop(self,"sword_attack_anim")
 			decrement_counter_prop(self,"sword_attack_cooldown")
@@ -88,16 +118,19 @@ local entity_classes={
 			if decrement_counter_prop(self,"dodge_roll_detection") then
 				self.dodge_roll_dir=nil
 			end
+			self.hurtbox_channel=ternary(self.dodge_roll_anim>0,0,1) -- player
 			-- switch move direction when a button pressed
 			if self.dodge_roll_end_anim<=0 and self.sword_attack_anim<=0 and self.javelin_throw_anim<=0 then
 				foreach(directions,function(dir)
 					if self.dodge_roll_anim<=0 and btnp2(dir) then
-						self.move_dir=dir
-						if dir==self.dodge_roll_dir then
-							self.dodge_roll_anim=8
-						else
-							self.dodge_roll_detection=8
-							self.dodge_roll_dir=dir
+						if not player_has_curse("no-left") or self.facing_dir==dir or dir==clockwise_dirs[self.facing_dir] then
+							self.move_dir=dir
+							-- if dir==self.dodge_roll_dir then
+							-- 	self.dodge_roll_anim=8
+							-- else
+							-- 	self.dodge_roll_detection=8
+							-- 	self.dodge_roll_dir=dir
+							-- end
 						end
 					end
 				end)
@@ -110,39 +143,70 @@ local entity_classes={
 					if not self.move_dir then
 						foreach(directions,function(dir)
 							if btn2(dir) then
-								self.move_dir=dir
+								if not player_has_curse("no-left") or self.facing_dir==dir or dir==clockwise_dirs[self.facing_dir] then
+									self.move_dir=dir
+								end
 							end
 						end)
 					end
 				end
 			end
 			-- no moving during an animation
-			if self.javelin_throw_anim>0 or self.sword_attack_anim>0 or self.dodge_roll_end_anim>0 then
+			if self.javelin_throw_anim>0 or self.sword_attack_anim>0 or self.dodge_roll_end_anim>0 or self.auto_attacks>0 then
 				self.vx,self.vy=0,0
 			else
 				-- face the direction of movement
 				if self.move_dir then
 					self.facing_dir=self.move_dir
+					if player_has_curse("crab-walk") then
+						self.true_facing_dir=clockwise_dirs[self.facing_dir]
+					else
+						self.true_facing_dir=self.facing_dir
+					end
 				end
 				-- move in the movement direction
-				self.vx,self.vy=dir_to_vector(self.move_dir,ternary(self.dodge_roll_anim>0,2.5,1))
+				local move_dir=self.move_dir
+				if player_has_curse("perma-move") then
+					move_dir=move_dir or self.facing_dir
+				end
+				local move_speed=1
+				if player_has_curse("gigantic") then
+					move_speed*=0.5
+				end
+				if player_has_curse("high-speed") then
+					move_speed*=5
+				end
+				self.vx,self.vy=dir_to_vector(move_dir,move_speed*ternary(self.dodge_roll_anim>0,2.5,1))
 			end
 			-- move the character
 			self:apply_velocity()
 			-- switch weapons
-			if btnp2("x") then
-				self.weapon_index=1+(self.weapon_index%#self.weapons)
-			end
+			-- if btnp2("x") then
+			-- 	self.weapon_index=1+(self.weapon_index%#self.weapons)
+			-- end
 			-- throw a javelin
-			if self.dodge_roll_anim<=0 and self.dodge_roll_end_anim<=0 and btnp2("z") then
+			if self.dodge_roll_anim<=0 and self.dodge_roll_end_anim<=0 and btnp2("z") or self.auto_attacks>0 then
 				if self.weapons[self.weapon_index]=="sword" and self.sword_attack_cooldown<=0 then
-					self.sword_attack_anim=10
-					self.sword_attack_cooldown=17
-					spawn_entity("sword_attack",self.x,self.y,{slash_dir=self.facing_dir})
+					self.sword_attack_anim=10*ternary(player_has_curse("gigantic"),2,1)
+					self.sword_attack_cooldown=10*ternary(player_has_curse("gigantic"),2,1)+7
+					if player_has_curse("threes") and self.auto_attacks==0 then
+						self.auto_attacks=2
+					else
+						decrement_counter_prop(self,"auto_attacks")
+					end
+					if player_has_curse("frog-summons") then
+						local x=rnd_int(20,100)
+						local y=0
+						if rnd()<0.5 then
+							y=75
+						end
+						spawn_entity("frog",x,y)
+					end
+					spawn_entity("sword_attack",self.x,self.y,{slash_dir=self.true_facing_dir})
 				elseif self.weapons[self.weapon_index]=="javelin" and self.javelin_throw_cooldown<=0 then
 					self.javelin_throw_anim=10
 					self.javelin_throw_cooldown=30
-					spawn_entity("javelin",self.x+2,self.y+2,{move_dir=self.facing_dir})
+					spawn_entity("javelin",self.x+2,self.y+2,{move_dir=self.true_facing_dir})
 				end
 			end
 		end,
@@ -151,12 +215,12 @@ local entity_classes={
 			local sy=11
 			local sw=7
 			local sh=12
-			local sflipped=(self.facing_dir=="left")
+			local sflipped=(self.true_facing_dir=="left")
 			local sdx=0
 			local sdy=5
-			if self.facing_dir=="down" then
+			if self.true_facing_dir=="down" then
 				sx=57
-			elseif self.facing_dir=="up" then
+			elseif self.true_facing_dir=="up" then
 				sx=105
 			else
 				sx=81
@@ -170,16 +234,27 @@ local entity_classes={
 				sx+=ternary(self.frames_alive%16>8,8,16)
 			end
 			if self.sword_attack_anim>0 then
-				if self.facing_dir=="down" then
+				if self.true_facing_dir=="down" then
 					sx,sy,sw,sh,sdy=23,14,6,17,4
-				elseif self.facing_dir=="up" then
+				elseif self.true_facing_dir=="up" then
 					sx,sy,sw,sh,sdy=30,7,7,20,13
 				else
-					sx,sh,sw,sh,sdx,sdy=38,15,18,12,ternary(self.facing_dir=="left",11,0),8
+					sx,sh,sw,sh,sdx,sdy=38,15,18,12,ternary(self.true_facing_dir=="left",11,0),8
 				end
 			end
 			if self.invincibility_frames%6<3 then
-				sspr2(sx,sy,sw,sh,self.x-sdx,self.y-sdy,sflipped)
+				if player_has_curse("invisibility") then
+					local i
+					for i=0,15 do
+						palt(i,true)
+					end
+				end
+				pal(3,10)
+				palt(3,false)
+				pal(11,7)
+				palt(11,false)
+				local size_mult=ternary(player_has_curse("gigantic"),2,1)
+				sspr2(sx,sy,sw,sh,self.x-size_mult*sdx,self.y-size_mult*sdy,sflipped,false,size_mult*sw,size_mult*sh)
 				-- self:draw_outline(12)
 			end
 		end,
@@ -189,28 +264,38 @@ local entity_classes={
 		on_hurt=function(self)
 			self.invincibility_frames=48
 			freeze_and_shake_screen(6,10)
+			if player_has_curse('tele-on-hit') then
+				self.x=rnd_int(0,112)
+				self.y=rnd_int(0,68)
+			end
 		end
 	},
 	sword_attack={
 		width=15,
 		height=7,
-		frames_to_death=4,
+		frames_to_death=1,
 		hitbox_channel=2+4+8+16, -- witches + minions + tombstones + fences
 		init=function(self)
+			local size_mult=ternary(player_has_curse("gigantic"),2,1)
 			if self.slash_dir=="right" then
-				self.x+=2
+				self.x+=size_mult*2
 			elseif self.slash_dir=="left" then
-				self.x-=10
+				self.x-=size_mult*10
 			else
 				self.width,self.height=7,12
 				if self.slash_dir=="down" then
-					self.y+=1
+					self.y+=size_mult*1
 				else
-					self.y-=9
+					self.y-=size_mult*9
 				end
 			end
+			self.width*=size_mult
+			self.height*=size_mult
 		end,
-		draw=noop
+		draw=noop,
+		on_hit=function(self)
+			freeze_and_shake_screen(1,2)
+		end
 	},
 	javelin={
 		width=5,
@@ -244,41 +329,56 @@ local entity_classes={
 	witch={
 		width=10,
 		height=8,
-		health=3,
+		health=2,
 		hitbox_channel=1, -- player
 		hurtbox_channel=2, -- witch
 		spell=nil,
 		spell_startup_frames=0,
 		spell_recovery_frames=0,
-		spell_cooldown_frames=10,
+		spell_cooldown_frames=20,
+		keep_in_bounds=true,
 		update=function(self)
 			-- start casting a spell
 			if decrement_counter_prop(self,"spell_cooldown_frames") then
-				-- local spells={"summon_frogs","raise_skeletons","lob_blasts","shoot_bats"}
-				self.spell="summon_frogs"
+				local spells={"summon_frogs","lob_blasts","shoot_bats","raise_skeletons"}
+				self.spell=spells[rnd_int(1,#spells)]
 				self.spell_startup_frames=40
 			end
 			-- cast a spell
 			if decrement_counter_prop(self,"spell_startup_frames") then
-				if self.spell=="summon_frogs" then
-					spawn_entity("frog",self.x-5,self.y-8)
-					spawn_entity("frog",self.x-5,self.y+8)
-					spawn_entity("frog",self.x-5,self.y)
+				if self.spell=="shoot_bats" then
+					spawn_entity("bat",self.x-2,self.y,{wait_frames=1})
+					spawn_entity("bat",self.x-2,self.y,{wait_frames=10})
+					spawn_entity("bat",self.x-2,self.y,{wait_frames=20})
+				elseif self.spell=="summon_frogs" then
+					spawn_entity("frog",self.x-5,self.y-4)
+					spawn_entity("frog",self.x-5,self.y+4)
+				elseif self.spell=="lob_blasts" then
+					local i
+					for i=1,3 do
+						spawn_entity("lobbed_bomb",self.x,self.y,{target_x=player.x+rnd_int(-14,14),target_y=player.y+rnd_int(-10,10)})
+					end
+				elseif self.spell=="raise_skeletons" then
+					spawn_entity("skeleton",self.x-5,self.y)
 				end
 				self.spell_recovery_frames=30
 			end
 			-- cooldown between spell casts
 			if decrement_counter_prop(self,"spell_recovery_frames") then
-				self.spell_cooldown_frames=rnd_int(50,100)
+				self.spell_cooldown_frames=rnd_int(60,120)
 			end
 			self:apply_velocity()
 		end,
 		draw=function(self)
-			-- rectfill(self.x+0.5,self.y-2.5,self.x+9.5,self.y+7.5,2)
-			-- self:draw_outline(7)
 			if self.spell_startup_frames>0 then
-				if self.spell=="summon_frogs" then
+				if self.spell=="shoot_bats" then
+					color(13)
+				elseif self.spell=="summon_frogs" then
 					color(3)
+				elseif self.spell=="lob_blasts" then
+					color(14)
+				elseif self.spell=="raise_skeletons" then
+					color(7)
 				end
 				circ(self.x,self.y,self.spell_startup_frames/2)
 			end
@@ -286,6 +386,63 @@ local entity_classes={
 		end,
 		on_death=function(self)
 			init_scene("curse")
+		end
+	},
+	bat={
+		width=5,
+		height=5,
+		hitbox_channel=1, -- player
+		hurtbox_channel=4, -- minion
+		frames_to_death=70,
+		update=function(self)
+			if decrement_counter_prop(self,"wait_frames") then
+				local dx=mid(-100,player:center_x()-self:center_x(),100)
+				local dy=mid(-100,player:center_y()-self:center_y(),100)
+				local dist=sqrt(dx*dx+dy*dy)
+				self.vx=1.2*dx/dist
+				self.vy=1.2*dy/dist
+			end
+			self.vx*=1.03
+			self.vy*=1.03
+			self:apply_velocity()
+		end,
+		draw=function(self)
+			if self.wait_frames<=0 then
+				-- self:draw_outline()
+				sspr2(ternary(self.frames_alive%8>4,6,0),36,6,5,self.x-1,self.y)
+			end
+		end
+	},
+	lobbed_bomb={
+		frames_to_death=40,
+		init=function(self)
+			self.vx=(self.target_x-self.x)/40
+			self.vy=(self.target_y-self.y)/40
+		end,
+		update=function(self)
+			if self.frames_alive==40 then
+				self.vx,self.vy=0,0
+			end
+			self:apply_velocity()
+		end,
+		draw=function(self)
+			local f=self.frames_alive
+			local x=self.x
+			local y=self.y+0.076*f*f-3*f
+			circfill(x,y,3,14)
+			pset(self.target_x,self.target_y,14)
+		end,
+		on_death=function(self)
+			spawn_entity("explosion",self.x-4,self.y-4)
+		end
+	},
+	explosion={
+		width=8,
+		height=8,
+		hitbox_channel=1+4+8+16, -- player + minions + tombstones + fences
+		frames_to_death=4,
+		draw=function(self)
+			circfill(self.x+4.5,self.y+4.5,4,7)
 		end
 	},
 	frog={
@@ -298,6 +455,7 @@ local entity_classes={
 		collision_channel=2+4+8+16, -- tombstones + trees + minions + fences
 		hop_frames=0,
 		frames_to_hop=1,
+		keep_in_bounds=true,
 		update=function(self)
 			decrement_counter_prop(self,"hop_frames")
 			if decrement_counter_prop(self,"frames_to_hop") then
@@ -319,6 +477,48 @@ local entity_classes={
 			sspr2(ternary(self.hop_frames>0,31,22),0,9,6,self.x-1,self.y,self.is_facing_right)
 		end
 	},
+	skeleton={
+		width=7,
+		height=9,
+		health=2,
+		hitbox_channel=1, -- player
+		hurtbox_channel=4, -- minion
+		obstacle_channel=8, -- minion
+		collision_channel=2+4+8+16, -- tombstones + trees + minions + fences
+		keep_in_bounds=true,
+		update=function(self)
+			-- decrement_counter_prop(self,"hop_frames")
+			-- if decrement_counter_prop(self,"frames_to_hop") then
+			local dx=mid(-100,player:center_x()-self:center_x(),100)
+			local dy=mid(-100,player:center_y()-self:center_y(),100)
+			local dist=sqrt(dx*dx+dy*dy)
+			if dist<40 then
+				self.vx,self.vy=0.5*dx/dist,0.5*dy/dist
+			elseif self.frames_alive%30==0 then
+				local angle=rnd()
+				self.vx,self.vy=0.5*cos(angle),0.5*sin(angle)
+			elseif self.frames_alive%30==20 then
+				self.vx,self.vy=0,0
+			end
+			self:apply_velocity()
+			-- 	self.frames_to_hop=rnd_int(35,60)
+			-- 	self.hop_frames=rnd_int(8,12)
+			-- 	self.is_facing_right=self.vx>0
+			-- end
+			-- if self.hop_frames<=0 then
+			-- 	self.vx,self.vy=0,0
+			-- end
+			-- self:apply_velocity()
+		end,
+		draw=function(self)
+			-- self:draw_outline(8)
+			sspr2(ternary(self.frames_alive%14>7,0,8),42,7,11,self.x,self.y-2,self.is_facing_right)
+		end,
+		on_hurt=function(self)
+			self.x-=20*self.vx
+			self.y-=20*self.vy
+		end
+	},
 	tombstone={
 		width=6,
 		height=6,
@@ -331,6 +531,11 @@ local entity_classes={
 		draw=function(self)
 			sspr2(12,0,10,6,self.x-2,self.y+2,self.flipped)
 			sspr2(ternary(self.health<2,6,0),0,6,7,self.x,self.y-1)
+		end,
+		on_death=function(self)
+			if player_has_curse("medium") then
+				spawn_entity("skeleton",self.x,self.y)
+			end
 		end
 	},
 	tree={
@@ -401,7 +606,14 @@ function _draw()
 	end
 	-- clear the screen
 	camera()
-	cls(0)
+	if player_has_curse("slow-clear") then
+		local i
+		for i=1,1000 do
+			pset(rnd_int(0,127),rnd_int(0,127),0)
+		end
+	else
+		cls(0)
+	end
 	-- draw guidelines
 	-- rect(0,0,127,127,1)
 	-- rect(2,25,125,102,1)
@@ -414,6 +626,7 @@ end
 function init_title()
 	player_curses={}
 	shuffle_list(curses)
+	-- debug_add_curse(curses[1][1])
 end
 
 function update_title()
@@ -451,8 +664,16 @@ function init_game()
 	-- spawn_entity("horizontal_fence",30,40)
 	-- spawn_entity("horizontal_fence",38,40)
 	-- spawn_entity("horizontal_fence",46,40)
+	if player_has_curse("hallucinations") then
+		local possibilities={"player","witch","frog","tombstone","tree","horizontal_fence","vertical_fence"}
+		local i
+		for i=1,10 do
+			spawn_entity(possibilities[rnd_int(1,#possibilities)],rnd_int(10,100),rnd_int(10,70),{is_hallucination=true})
+		end
+	end
 	-- add new entities to the game immediately
 	add_new_entities()
+	-- debug_add_curse("no-left")
 end
 
 function generate_level()
@@ -466,6 +687,11 @@ function generate_level()
 	local player_row=6
 	player=spawn_entity("player",8*player_col-7,7*player_row-7)
 	tiles[player_col][player_row]=player
+	if player_has_curse("doppleganger") then
+		local player2_col=1
+		local player2_row=7
+		tiles[player2_col][player2_row]=spawn_entity("player",8*player2_col-7,7*player2_row-7)
+	end
 	-- spawn the witch
 	local witch_col=rnd_int(14,15)
 	local witch_row=rnd_int(4,8)
@@ -501,6 +727,15 @@ function generate_level()
 			tiles[col][row]=spawn_entity("tombstone",8*col-rnd_int(6,7),7*row-rnd_int(6,7))
 		end
 	end
+	-- make some enemies
+	local num_minions=rnd_int(0,3)
+	for i=1,num_minions do
+		local col=rnd_int(6,13)
+		local row=rnd_int(2,10)
+		if not tiles[col][row] then
+			tiles[col][row]=spawn_entity(ternary(rnd()<0.5,"skeleton","frog"),8*col-rnd_int(6,7),7*row-rnd_int(6,7))
+		end
+	end
 end
 
 function generate_fence(tiles)
@@ -531,9 +766,23 @@ function update_game()
 		if decrement_counter_prop(entity,"frames_to_death") then
 			entity:die()
 		else
-			entity:update()
-			increment_counter_prop(entity,"frames_alive")
-			decrement_counter_prop(entity,"invincibility_frames")
+			if not entity.is_hallucination then
+				entity:update()
+				increment_counter_prop(entity,"frames_alive")
+				decrement_counter_prop(entity,"invincibility_frames")
+				if entity.keep_in_bounds then
+					if entity.x<0 then
+						entity.x=0
+					elseif entity.x+entity.width>121 then
+						entity.x=121-entity.width
+					end
+					if entity.y<0 then
+						entity.y=0
+					elseif entity.y+entity.height>77 then
+						entity.y=77-entity.height
+					end
+				end
+			end
 		end
 	end)
 	-- check for hits
@@ -543,7 +792,7 @@ function update_game()
 		local j
 		for j=1,#entities do
 			local e2=entities[j]
-			if i!=j and band(e1.hitbox_channel,e2.hurtbox_channel)>0 then
+			if i!=j and not e1.is_hallucination and not e2.is_hallucination and band(e1.hitbox_channel,e2.hurtbox_channel)>0 then
 				if rects_overlapping(e1.x,e1.y,e1.width,e1.height,e2.x,e2.y,e2.width,e2.height) then
 					e1:on_hit(e2)
 					if e2.invincibility_frames<=0 then
@@ -572,7 +821,9 @@ end
 
 function draw_game(shake_x)
 	-- draw play grid
-	camera(shake_x-2,-25)
+	local camera_x=shake_x-2
+	local camera_y=-25
+	camera(camera_x,camera_y)
 	color(1)
 	-- local c,r
 	-- for c=0,15 do
@@ -583,9 +834,21 @@ function draw_game(shake_x)
 	-- end
 	rect(0,0,120,77)
 	-- draw each entity
-	foreach(entities,function(entity)
-		entity:draw()
-	end)
+	if player_has_curse("vertigo") then
+		camera(camera_x+10*cos(scene_frame/200),camera_y+10*sin(scene_frame/200))
+		draw_game_objects()
+		camera(camera_x-10*cos(scene_frame/200),camera_y-10*sin(scene_frame/200))
+		draw_game_objects()
+	else
+		draw_game_objects()
+	end
+	if player_has_curse("near-sighted") then
+		color(0)
+		rectfill(-10,-10,player.x-31,87)
+		rectfill(player.x+38,-10,137,87)
+		rectfill(-10,-10,137,player.y-34)
+		rectfill(-10,player.y+35,137,87)
+	end
 	-- draw ui
 	camera(shake_x)
 	color(0)
@@ -596,6 +859,16 @@ function draw_game(shake_x)
 	for i=1,3 do
 		sspr(ternary(player.health<i,77,68),0,9,8,10*i+40,115)
 	end
+end
+
+function draw_game_objects()
+	rect(0,0,120,77,1)
+	-- draw each entity
+	foreach(entities,function(entity)
+		pal()
+		entity:draw()
+	end)
+	pal()
 end
 
 -- curse scene methods
@@ -632,18 +905,23 @@ end
 
 -- death scene methods
 function init_death()
+	player_curses={}
+	shuffle_list(curses)
 end
 
 function update_death()
 	if scene_frame>20 and btnp2("z") then
-		init_scene("title")
+		init_scene("game")
 	end
 end
 
 function draw_death()
+	color(7)
+	print("i'm real sorry but",28,50)
+	print("you died :(",42,60)
 	color(13)
 	if scene_frame%40<30 then
-		print("press z to continue",26,108)
+		print("press z to continue",26,108,13)
 	end
 end
 
@@ -707,7 +985,7 @@ function spawn_entity(class_name,x,y,args,skip_init)
 							local i
 							for i=1,#entities do
 								local entity=entities[i]
-								if band(self.collision_channel,entity.obstacle_channel)>0 and self!=entity and mult*self[vel]>=mult*entity[vel] then
+								if band(self.collision_channel,entity.obstacle_channel)>0 and self!=entity and mult*self[vel]>=mult*entity[vel] and not self.is_hallucination and not entity.is_hallucination then
 									-- they can collide, now check to see if there is overlap
 									local self_sub={}
 									self_sub.x=self.x+1.1
@@ -772,6 +1050,9 @@ function spawn_entity(class_name,x,y,args,skip_init)
 		-- add it to the list of entities-to-be-added
 		add(new_entities,entity)
 	end
+	if player_has_curse("weakness") and class_name!="player" then
+		entity.health+=1
+	end
 	-- return it
 	return entity
 end
@@ -801,6 +1082,15 @@ function player_has_curse(s)
 	for i=1,#player_curses do
 		if player_curses[i][1]==s then
 			return true
+		end
+	end
+end
+
+function debug_add_curse(s)
+	local i
+	for i=1,#curses do
+		if curses[i][1]==s then
+			add(player_curses,curses[i])
 		end
 	end
 end
@@ -844,8 +1134,8 @@ function btnp2(n)
 	return button_presses[button_string_to_index(n)]
 end
 
-function sspr2(sx,sy,sw,sh,x,y,fh,fv)
-	sspr(sx,sy,sw,sh,x+0.5,y+0.5,sw,sh,fh,fv)
+function sspr2(sx,sy,sw,sh,x,y,fh,fv,w,h)
+	sspr(sx,sy,sw,sh,x+0.5,y+0.5,(w or sw),(h or sh),fh,fv)
 end
 
 -- round a number up to the nearest integer
@@ -952,52 +1242,52 @@ __gfx__
 6dd66d6d266d001111110000bbb3b00b00b303300505050505005000505050050005088888880050000050000042440002dd42440d0000000000000000000000
 66666dd6626d01000000010b03b33000000030030555555555005505550550050050008888800005000500000dd4dd00000dd4ddd00000000000000000000000
 66666d6666dd0000000000000000000000000000050505050500505050505005005000088800000050500000d2dddd0000dddddd000000000000000000000000
-0a0000000000000000000000000000000a000000000000000000000000000000000000008000000005000044442dd4454444ddd4450000000000000000000000
-0a0aaaa999aaaa00000000000000000007a000000000000000000000000000000000000000000000000000055ddd4454055ddd44540000000000000000000000
-0a00000000000000000000000000000007a0000000000000000000000000000000000000000000000000000055dd04450055dd04450000000000000000000000
-0a00000000000000000000000000000007a0000000000000000000000000000000000000000000000000000000d000000000d000000000000000000000000000
-0900000000000000000000000000000007a00000000000000000000000a000a000a000a000a000a000a00a0000a00a0000a00a0000a000a000a000a000a000a0
-0900000000000000000000000000000007a000000000000000000000009929900099299000992990009922900099229000992290009222900092229000922290
-090000000000000000000000000000000aa000000000000000000000002444200024442000244420002244200022442000224420002222200022222000222220
-0a0000000000000000000000a000a000aaaa00000000000000000000002444200024442000244420002244200022442000224420002222200022222000222220
-0a000000000000000000000099299000a0a00000a00a000000000000002a4a200a2a4a20002a4a24022aa4a0022aa4a0022aa4a000222220042222200022222a
+0a00000000000000000000000000000003000000000000000000000000000000000000008000000005000044442dd4454444ddd4450000000000000000000000
+0a0aaaa999aaaa0000000000000000000b3000000000000000000000000000000000000000000000000000055ddd4454055ddd44540000000000000000000000
+0a0000000000000000000000000000000b30000000000000000000000000000000000000000000000000000055dd04450055dd04450000000000000000000000
+0a0000000000000000000000000000000b30000000000000000000000000000000000000000000000000000000d000000000d000000000000000000000000000
+090000000000000000000000000000000b300000000000000000000000a000a000a000a000a000a000a00a0000a00a0000a00a0000a000a000a000a000a000a0
+090000000000000000000000000000000b3000000000000000000000009929900099299000992990009922900099229000992290009222900092229000922290
+09000000000000000000000000000000033000000000000000000000002444200024442000244420002244200022442000224420002222200022222000222220
+0a0000000000000000000000a000a000333300000000000000000000002444200024442000244420002244200022442000224420002222200022222000222220
+0a000000000000000000000099299000a0300000a00a000000000000002a4a200a2a4a20002a4a24022aa4a0022aa4a0022aa4a000222220042222200022222a
 0a000000000000000000000024442000922a000099229000000000000aa9a9a40aa9a94000aaa9a40aa99a9400aa9a900aa99a940422222a042222200022222a
 0a0000000000000000000000244420022229000022442000000000000aa9a9940499a94000aaa9940aa99a9400a49a900aa99a94049222aa049222aa04922294
-0000004004004400000000002a4a20022222000222442000a000000004999994009999400049999004999994009449904099994404999994009999aa04999990
-00400040400040000000000aa9a9a0022222a0222aa4a400aa77777a009a9a90009a9a90009a9a900099a9a00099a9a00099a9a0009999900099999404999990
-00040004000404400000000aa4a940222229a0229aaa944aaaaaaaa000aa9aa000aa9aa000aa9aa000aaa9a000aaa9a000aaa9a000aaaaa000aaaaa000aaaaa0
-00404002400420040000000094949022222900229aa44000a0000000009909900099099000990990009909900099099000990990009909900099099000990990
-4000440040440000000000009aaa9022229900009999900000000000009909900000099000990000009909900990099000999900009909900099000000000990
-044404424442000400400000aaaaa0022999000099a9a00000000000000000000000000000000000000000000000000000000000000000000000000000000000
-4022424224200444440000009aa9900aaaaa0000aaa9a000000000000000000000022200000444000000000000022200000999000000000000022200000aaa00
-0040244444204420040000009a7000099099000999099000000000000000000000222220009999900000000000222220009999a000000000002222200099a990
-0400244242444200004000000a700000009900099009900000000000000000000a22222a0999a999000000000aaa22220449999a000000000aa222aa09999999
-0000024444444000000000000a700000000000000000000000000000000000000aa222aa099aaaa9000000000aa9aa22022aa9aa000000000a999a9a099444a9
-0000024444424000000000000a700000000000000000000000000000000000000a9444aa0aaaaaaa000000000a99aa440222aaaa00000000099aaa990aa222aa
-0000224244424200000000000a700000000000000000000000000000000000000099a99000a222a00000000000a999900022222000000000009aa99000a222a0
-00002442424442000000000000a0000000000000000000000000000000000000000999000002220000000000000999000002220000000000000aa90000022200
+0000004004004400000000002a4a200222220002224420003000000004999994009999400049999004999994009449904099994404999994009999aa04999990
+00400040400040000000000aa9a9a0022222a0222aa4a40033bbbbb3009a9a90009a9a90009a9a900099a9a00099a9a00099a9a0009999900099999404999990
+00040004000404400000000aa4a940222229a0229aaa94433333333000aa9aa000aa9aa000aa9aa000aaa9a000aaa9a000aaa9a000aaaaa000aaaaa000aaaaa0
+00404002400420040000000094949022222900229aa4400030000000009909900099099000990990009909900099099000990990009909900099099000990990
+40004400404400000000000093aa9022229900009999900000000000009909900000099000990000009909900990099000999900009909900099000000000990
+0444044244420004004000003333a0022999000099a9a00000000000000000000000000000000000000000000000000000000000000000000000000000000000
+4022424224200444440000009339900aaaaa0000aaa9a000000000000000000000022200000444000000000000022200000999000000000000022200000aaa00
+00402444442044200400000093b000099099000999099000000000000000000000222220009999900000000000222220009999a000000000002222200099a990
+04002442424442000040000003b00000009900099009900000000000000000000a22222a0999a999000000000aaa22220449999a000000000aa222aa09999999
+00000244444440000000000003b00000000000000000000000000000000000000aa222aa099aaaa9000000000aa9aa22022aa9aa000000000a999a9a099444a9
+00000244444240000000000003b00000000000000000000000000000000000000a9444aa0aaaaaaa000000000a99aa440222aaaa00000000099aaa990aa222aa
+00002242444242000000000003b00000000000000000000000000000000000000099a99000a222a00000000000a999900022222000000000009aa99000a222a0
+0000244242444200000000000030000000000000000000000000000000000000000999000002220000000000000999000002220000000000000aa90000022200
 00024244424442000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00442444444424000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000224422222400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000004200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+dd00dd00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+d100d100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0dddd00dddd000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+08d8d0d8d8dd00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+070700d7070100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+07770000077700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+70707000707070000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+07770000077700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+07700000077000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00070070700700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+77777770777777700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+70776000007760700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00070000000700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00767700077670000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00700700070070000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00700000000070000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
