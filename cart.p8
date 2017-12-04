@@ -1,6 +1,9 @@
 pico-8 cartridge // http://www.pico-8.com
 version 8
 __lua__
+-- curse collector
+-- by ayla myers (aka bridgs)
+
 --[[
 hurtbox channels
 	1: player
@@ -8,6 +11,7 @@ hurtbox channels
 	4: minions
 	8: tombstones
 	16: fences
+	32: heart
 
 obstacle channels
 	1: player
@@ -51,10 +55,20 @@ local button_presses={}
 local entities
 local new_entities
 local player
+local player2
 
 -- global list of curses
 local player_curses
 local curses={
+	{"axes","unreliable weapon",{"your attacks spin around","you in a circle."}},
+	{"shadow","stalked by shadows",{"a malicious shadow","follows behind you."}},
+	{"love","misplaced affection",{"you occasionally fall in","love with minions. it hurts you to","see them get hurt."}},
+	{"slippery","eternal slipperiness",{"you slide along the ground."}},
+	{"lonely","crippling loneliness",{"you slowly take damage","unless you stay near","another creature."}},
+	{"big-heart","big heart",{"you have a very","big heart."}},
+	{"magnetic","magnetic",{"metallic objects are","attracted to you."}},
+	{"floating-heart","heart on your sleeve",{"a heart circles around you.", "if you attack it,","you take damage."}},
+	{"monochrome","colorblind",{"you can't distinguiush","between colors."}},
 	{"medium","reluctant medium",{"whenever you destroy a","tombstone you raise","a skeleton."}},
 	{"doppleganger","doppleganger",{"there are two of you."}},
 	{"slow-clear","constant daze",{"the world swirls around you."}},
@@ -66,14 +80,11 @@ local curses={
 	{"vertigo","extreme vertigo",{"you are constantly dizzy."}},
 	{"gigantic","excessive growth",{"you are twice as big and","move at half speed."}},
 	{"tele-on-hit","unstable structure",{"whenever you take damage","you teleport to a","random location."}},
-	{"near-sighted","clouded eyes",{"your eyesight is limited"}},
+	{"near-sighted","clouded eyes",{"your eyesight is limited."}},
 	{"invisibility","hidden from mortal eyes",{"you are invisible."}},
 	{"perma-move","eternal unrest",{"you can't stop moving."}},
 	{"high-speed","ludicrous speed",{"you move 5x faster than normal."}},
 	{"no-left","sinistrophobia",{"you can't turn left."}},
-
-
-	-- {"floating-heart","heart on your sleeve",{"a heart circles around you.", "if it takes damage,","you take damage."}},
 }
 
 -- entity classes
@@ -95,6 +106,8 @@ local entity_classes={
 		dodge_roll_anim=0,
 		dodge_roll_end_anim=0,
 		dodge_roll_detection=5,
+		frames_to_loneliness=0,
+		frames_to_love=0,
 		weapons={"sword","javelin"},
 		weapon_index=1,
 		keep_in_bounds=true,
@@ -104,8 +117,45 @@ local entity_classes={
 				self.width*=2
 				self.height*=2
 			end
+			if player_has_curse("lonely") then
+				self.frames_to_loneliness=149
+			end
+			if player_has_curse("love") then
+				self.frames_to_love=rnd_int(100,400)
+			end
 		end,
 		update=function(self)
+			if decrement_counter_prop(self,"frames_to_loneliness") then
+				self.health-=1
+				if self:on_hurt(e1)!=false and self.health<=0 then
+					self:die()
+				end
+				self.frames_to_loneliness=149
+			end
+			local i
+			for i=1,#entities do
+				if entities[i].class_name=="frog" or entities[i].class_name=="bat" or entities[i].class_name=="skeleton" or entities[i].class_name=="witch" then
+					local dx=mid(-100,entities[i]:center_x()-self:center_x(),100)
+					local dy=mid(-100,entities[i]:center_y()-self:center_y(),100)
+					local dist=sqrt(dx*dx+dy*dy)
+					if dist<30 then
+						self.frames_to_loneliness=150
+					end
+				end
+			end
+			if decrement_counter_prop(self,"frames_to_love") then
+				local i
+				local suitors={}
+				for i=1,#entities do
+					if entities[i].class_name=="frog" or entities[i].class_name=="skeleton" then
+						add(suitors,entities[i])
+					end
+				end
+				if #suitors>0 then
+					spawn_entity("in_love",0,0,{target=suitors[rnd_int(1,#suitors)]})
+				end
+				self.frames_to_love=rnd_int(200,400)
+			end
 			decrement_counter_prop(self,"sword_attack_anim")
 			decrement_counter_prop(self,"sword_attack_cooldown")
 			decrement_counter_prop(self,"javelin_throw_anim")
@@ -152,8 +202,16 @@ local entity_classes={
 				end
 			end
 			-- no moving during an animation
+			local move_speed=1
+			if player_has_curse("gigantic") then
+				move_speed*=0.5
+			end
+			if player_has_curse("high-speed") then
+				move_speed*=5
+			end
+			local vx,vy=0,0
 			if self.javelin_throw_anim>0 or self.sword_attack_anim>0 or self.dodge_roll_end_anim>0 or self.auto_attacks>0 then
-				self.vx,self.vy=0,0
+				vx,vx=0,0
 			else
 				-- face the direction of movement
 				if self.move_dir then
@@ -169,14 +227,14 @@ local entity_classes={
 				if player_has_curse("perma-move") then
 					move_dir=move_dir or self.facing_dir
 				end
-				local move_speed=1
-				if player_has_curse("gigantic") then
-					move_speed*=0.5
-				end
-				if player_has_curse("high-speed") then
-					move_speed*=5
-				end
-				self.vx,self.vy=dir_to_vector(move_dir,move_speed*ternary(self.dodge_roll_anim>0,2.5,1))
+				vx,vy=dir_to_vector(move_dir,move_speed*ternary(self.dodge_roll_anim>0,2.5,1))
+			end
+			if player_has_curse("slippery") then
+				self.vx=mid(-1.2*move_speed,(self.vx+vx/20)*0.995,1.2*move_speed)
+				self.vy=mid(-1.2*move_speed,(self.vy+vy/20)*0.995,1.2*move_speed)
+			else
+				self.vx=vx
+				self.vy=vy
 			end
 			-- move the character
 			self:apply_velocity()
@@ -202,7 +260,11 @@ local entity_classes={
 						end
 						spawn_entity("frog",x,y)
 					end
-					spawn_entity("sword_attack",self.x,self.y,{slash_dir=self.true_facing_dir})
+					if player_has_curse("axes") then
+						spawn_entity("axe_attack",self.x,self.y,{attack_dir=self.true_facing_dir})
+					else
+						spawn_entity("sword_attack",self.x,self.y,{slash_dir=self.true_facing_dir})
+					end
 				elseif self.weapons[self.weapon_index]=="javelin" and self.javelin_throw_cooldown<=0 then
 					self.javelin_throw_anim=10
 					self.javelin_throw_cooldown=30
@@ -211,6 +273,14 @@ local entity_classes={
 			end
 		end,
 		draw=function(self)
+			if player_has_curse("lonely") then
+				color(ternary(self.frames_to_loneliness==150,3,1))
+				if player_has_curse("monochrome") then
+					color(ternary(self.frames_to_loneliness==150,14,2))
+				end
+				circ(self:center_x(),self:center_y(),30)
+				circ(self:center_x(),self:center_y(),30*self.frames_to_loneliness/150)
+			end
 			local sx
 			local sy=11
 			local sw=7
@@ -253,7 +323,30 @@ local entity_classes={
 				palt(3,false)
 				pal(11,7)
 				palt(11,false)
+				pal(12,10)
+				if player_has_curse("monochrome") then
+					pal(3,15)
+					pal(10,15)
+					pal(11,15)
+					pal(9,14)
+					pal(4,13)
+					pal(12,15)
+				end
+				if self.is_shadow then
+					local i
+					for i=1,15 do
+						pal(i,ternary(player_has_curse("monochrome"),2,1))
+					end
+				end
 				local size_mult=ternary(player_has_curse("gigantic"),2,1)
+				if player_has_curse("axes") then
+					palt(3,true)
+					palt(11,true)
+					pal(12,9)
+					if player_has_curse("monochrome") then
+						pal(12,14)
+					end
+				end
 				sspr2(sx,sy,sw,sh,self.x-size_mult*sdx,self.y-size_mult*sdy,sflipped,false,size_mult*sw,size_mult*sh)
 				-- self:draw_outline(12)
 			end
@@ -262,7 +355,16 @@ local entity_classes={
 			init_scene("death")
 		end,
 		on_hurt=function(self)
+			self:hurt()
+		end,
+		hurt=function(self)
 			self.invincibility_frames=48
+			if player2 then
+				player.invincibility_frames=48
+				player2.invincibility_frames=48
+				player.health=min(player.health,player2.health)
+				player2.health=min(player.health,player2.health)
+			end
 			freeze_and_shake_screen(6,10)
 			if player_has_curse('tele-on-hit') then
 				self.x=rnd_int(0,112)
@@ -270,11 +372,146 @@ local entity_classes={
 			end
 		end
 	},
+	player_shadow={
+		extends="player",
+		hitbox_channel=1, -- player
+		hurtbox_channel=0,
+		obstacle_channel=0,
+		collision_channel=0,
+		x=-20,
+		y=-20,
+		keep_in_bounds=false,
+		is_shadow=true,
+		init=function(self)
+			self.player_states={}
+		end,
+		update=function(self)
+			if self.player_states[1] then
+				self:apply_player_state(self.player_states[1])
+			end
+			local i
+			for i=1,59 do
+				self.player_states[i]=self.player_states[i+1]
+			end
+			self.player_states[60]=self:copy_player_state()
+		end,
+		apply_player_state=function(self,state)
+			local k,v
+			for k,v in pairs(state) do
+				self[k]=state[k]
+			end
+		end,
+		copy_player_state=function(self)
+			return {
+				x=player.x,
+				y=player.y,
+				vx=player.vx,
+				vy=player.vy,
+				facing_dir=player.facing_dir,
+				true_facing_dir=player.true_facing_dir,
+				move_dir=player.move_dir,
+				sword_attack_anim=player.sword_attack_anim,
+				sword_attack_cooldown=player.sword_attack_cooldown,
+				frames_alive=player.frames_alive
+			}
+		end
+	},
+	axe_attack={
+		width=5,
+		height=5,
+		frames_to_death=100,
+		hitbox_channel=2+4+8+16+32, -- witches + minions + tombstones + fences + heart
+		collision_channel=16, -- trees
+		init=function(self)
+			self.x+=1
+			self.y+=1
+			self.scale=1
+			if player_has_curse("gigantic") then
+				self.scale=2
+				self.width*=2
+				self.height*=2
+			end
+			self.start_x=self.x
+			self.start_y=self.y
+			if self.attack_dir=="right" then
+				self.offset=0
+			elseif self.attack_dir=="left" then
+				self.offset=20
+			elseif self.attack_dir=="up" then
+				self.offset=10
+			elseif self.attack_dir=="down" then
+				self.offset=30
+			end
+		end,
+		update=function(self)
+			self.x=self.start_x+(self.scale*6+self.frames_alive/3)*cos((self.frames_alive+self.offset)/40)
+			self.y=self.start_y+(self.scale*6+self.frames_alive/3)*sin((self.frames_alive+self.offset)/40)
+		end,
+		draw=function(self)
+			if player_has_curse("monochrome") then
+				pal(7,15)
+				pal(10,15)
+				pal(9,14)
+			end
+			sspr2(0,57,5,5,self.x,self.y,self.frames_alive%12>6,(self.frames_alive+3)%12>6,5*self.scale,5*self.scale)
+			-- self:draw_outline(8)
+		end,
+		on_hit=function(self)
+			self:die()
+		end,
+		on_collide=function(self)
+			self:die()
+		end
+	},
+	in_love={
+		init=function(self)
+			self.prev_health=self.target.health
+		end,
+		update=function(self)
+			self.x=self.target:center_x()
+			self.y=self.target:center_y()
+			if not self.target.is_alive then
+				hurt_entity(player)
+				self:die()
+			elseif self.prev_health>self.target.health then
+				hurt_entity(player)
+			end
+			self.prev_health=self.target.health
+		end,
+		draw=function(self)
+			if player_has_curse("monochrome") then
+				pal(8,14)
+				pal(14,15)
+			end
+			sspr(0,53,5,4,self.x-3,self.y-11)
+		end
+	},
+	floating_heart={
+		width=4,
+		height=4,
+		hurtbox_channel=32, -- heart
+		update=function(self)
+			self.x=player.x+10*cos(self.frames_alive/100)
+			self.y=player.y+10*sin(self.frames_alive/100)
+		end,
+		draw=function(self)
+			if player_has_curse("monochrome") then
+				pal(8,14)
+				pal(14,15)
+			end
+			sspr(0,53,5,4,self.x,self.y)
+			-- self:draw_outline(7)
+		end,
+		on_hurt=function(self)
+			hurt_entity(player,self)
+			return false
+		end
+	},
 	sword_attack={
 		width=15,
 		height=7,
 		frames_to_death=1,
-		hitbox_channel=2+4+8+16, -- witches + minions + tombstones + fences
+		hitbox_channel=2+4+8+16+32, -- witches + minions + tombstones + fences + heart
 		init=function(self)
 			local size_mult=ternary(player_has_curse("gigantic"),2,1)
 			if self.slash_dir=="right" then
@@ -370,6 +607,12 @@ local entity_classes={
 			self:apply_velocity()
 		end,
 		draw=function(self)
+			if player_has_curse("monochrome") then
+				pal(5,2)
+				pal(4,14)
+				pal(7,15)
+				pal(3,2)
+			end
 			if self.spell_startup_frames>0 then
 				if self.spell=="shoot_bats" then
 					color(13)
@@ -409,6 +652,11 @@ local entity_classes={
 		draw=function(self)
 			if self.wait_frames<=0 then
 				-- self:draw_outline()
+				if player_has_curse("monochrome") then
+					pal(7,15)
+					pal(8,14)
+					pal(1,2)
+				end
 				sspr2(ternary(self.frames_alive%8>4,6,0),36,6,5,self.x-1,self.y)
 			end
 		end
@@ -474,6 +722,10 @@ local entity_classes={
 		end,
 		draw=function(self)
 			-- self:draw_outline(8)
+			if player_has_curse("monochrome") then
+				pal(11,14)
+				pal(3,2)
+			end
 			sspr2(ternary(self.hop_frames>0,31,22),0,9,6,self.x-1,self.y,self.is_facing_right)
 		end
 	},
@@ -512,6 +764,10 @@ local entity_classes={
 		end,
 		draw=function(self)
 			-- self:draw_outline(8)
+			if player_has_curse("monochrome") then
+				pal(7,15)
+				pal(6,15)
+			end
 			sspr2(ternary(self.frames_alive%14>7,0,8),42,7,11,self.x,self.y-2,self.is_facing_right)
 		end,
 		on_hurt=function(self)
@@ -529,6 +785,10 @@ local entity_classes={
 			self.flipped=rnd()<0.5
 		end,
 		draw=function(self)
+			if player_has_curse("monochrome") then
+				pal(1,2)
+				pal(6,14)
+			end
 			sspr2(12,0,10,6,self.x-2,self.y+2,self.flipped)
 			sspr2(ternary(self.health<2,6,0),0,6,7,self.x,self.y-1)
 		end,
@@ -545,6 +805,9 @@ local entity_classes={
 		draw=function(self)
 			-- rectfill(self.x+0.5,self.y-7.5,self.x+10.5,self.y+9.5,4)
 			-- self:draw_outline(9)
+			if player_has_curse("monochrome") then
+				pal(4,14)
+			end
 			sspr2(0,18,19,17,self.x-4,self.y-7)
 		end
 	},
@@ -554,7 +817,27 @@ local entity_classes={
 		health=2,
 		hurtbox_channel=16, -- fence
 		obstacle_channel=16, -- fence
+		collision_channel=16, -- fence
+		update=function(self)
+			if player_has_curse("magnetic") then
+				local dx=mid(-100,player:center_x()-self:center_x(),100)
+				local dy=mid(-100,player:center_y()-self:center_y(),100)
+				local dist=sqrt(dx*dx+dy*dy)
+				if dist<50 and dist>10 then
+					self.vx=0.25*dx/dist
+					self.vy=0.25*dy/dist
+				else
+					self.vx=0
+					self.vy=0
+				end
+			else
+			end
+			self:apply_velocity()
+		end,
 		draw=function(self)
+			if player_has_curse("monochrome") then
+				pal(5,13)
+			end
 			sspr(ternary(self.health<2,51,40),0,11,7,self.x-1,self.y-3)
 		end
 	},
@@ -563,6 +846,9 @@ local entity_classes={
 		width=3,
 		height=7,
 		draw=function(self)
+			if player_has_curse("monochrome") then
+				pal(5,13)
+			end
 			sspr(ternary(self.health<2,65,62),0,3,7,self.x,self.y-1)
 		end
 	}
@@ -607,7 +893,7 @@ function _draw()
 	-- clear the screen
 	camera()
 	if player_has_curse("slow-clear") then
-		local i
+		local i=0
 		for i=1,1000 do
 			pset(rnd_int(0,127),rnd_int(0,127),0)
 		end
@@ -625,8 +911,10 @@ end
 -- title scene methods
 function init_title()
 	player_curses={}
-	shuffle_list(curses)
 	-- debug_add_curse(curses[1][1])
+	-- debug_add_curse("axes")
+	-- debug_add_curse("monochrome")
+	shuffle_list(curses)
 end
 
 function update_title()
@@ -665,7 +953,7 @@ function init_game()
 	-- spawn_entity("horizontal_fence",38,40)
 	-- spawn_entity("horizontal_fence",46,40)
 	if player_has_curse("hallucinations") then
-		local possibilities={"player","witch","frog","tombstone","tree","horizontal_fence","vertical_fence"}
+		local possibilities={"player","witch","skeleton","frog","tombstone","tree","horizontal_fence","vertical_fence"}
 		local i
 		for i=1,10 do
 			spawn_entity(possibilities[rnd_int(1,#possibilities)],rnd_int(10,100),rnd_int(10,70),{is_hallucination=true})
@@ -673,7 +961,6 @@ function init_game()
 	end
 	-- add new entities to the game immediately
 	add_new_entities()
-	-- debug_add_curse("no-left")
 end
 
 function generate_level()
@@ -686,11 +973,20 @@ function generate_level()
 	local player_col=1
 	local player_row=6
 	player=spawn_entity("player",8*player_col-7,7*player_row-7)
+	if player_has_curse("floating-heart") then
+		spawn_entity("floating_heart")
+	end
+	if player_has_curse("shadow") then
+		spawn_entity("player_shadow")
+	end
 	tiles[player_col][player_row]=player
 	if player_has_curse("doppleganger") then
 		local player2_col=1
 		local player2_row=7
-		tiles[player2_col][player2_row]=spawn_entity("player",8*player2_col-7,7*player2_row-7)
+		player2=spawn_entity("player",8*player2_col-7,7*player2_row-7)
+		tiles[player2_col][player2_row]=player2
+	else
+		player2=nil
 	end
 	-- spawn the witch
 	local witch_col=rnd_int(14,15)
@@ -795,14 +1091,7 @@ function update_game()
 			if i!=j and not e1.is_hallucination and not e2.is_hallucination and band(e1.hitbox_channel,e2.hurtbox_channel)>0 then
 				if rects_overlapping(e1.x,e1.y,e1.width,e1.height,e2.x,e2.y,e2.width,e2.height) then
 					e1:on_hit(e2)
-					if e2.invincibility_frames<=0 then
-						e2.health-=e1.damage
-						e2.invincibility_frames=5
-						e2:on_hurt(e1)
-						if e2.health<=0 then
-							e2:die()
-						end
-					end
+					hurt_entity(e2,e1)
 				end
 			end
 		end
@@ -824,7 +1113,6 @@ function draw_game(shake_x)
 	local camera_x=shake_x-2
 	local camera_y=-25
 	camera(camera_x,camera_y)
-	color(1)
 	-- local c,r
 	-- for c=0,15 do
 	-- 	line(8*c,0,8*c,77)
@@ -832,12 +1120,11 @@ function draw_game(shake_x)
 	-- for r=0,11 do
 	-- 	line(0,7*r,120,7*r)
 	-- end
-	rect(0,0,120,77)
 	-- draw each entity
 	if player_has_curse("vertigo") then
-		camera(camera_x+10*cos(scene_frame/200),camera_y+10*sin(scene_frame/200))
+		camera(camera_x+7*cos(scene_frame/250),camera_y+7*sin(scene_frame/250))
 		draw_game_objects()
-		camera(camera_x-10*cos(scene_frame/200),camera_y-10*sin(scene_frame/200))
+		camera(camera_x-7*cos(scene_frame/250),camera_y-7*sin(scene_frame/250))
 		draw_game_objects()
 	else
 		draw_game_objects()
@@ -855,14 +1142,19 @@ function draw_game(shake_x)
 	rectfill(0,0,127,16)
 	rectfill(0,111,127,127)
 	-- draw player health
+	if player_has_curse("monochrome") then
+		pal(8,14)
+		pal(14,15)
+	end
+	local heart_mult=ternary(player_has_curse("big-heart"),3,1)
 	local i
 	for i=1,3 do
-		sspr(ternary(player.health<i,77,68),0,9,8,10*i+40,115)
+		sspr(ternary(player.health<i,77,68),0,9,8,65+10*(i-2.5)*heart_mult,130-15*heart_mult,9*heart_mult,8*heart_mult)
 	end
 end
 
 function draw_game_objects()
-	rect(0,0,120,77,1)
+	rect(0,0,120,77,ternary(player_has_curse("monochrome"),2,1))
 	-- draw each entity
 	foreach(entities,function(entity)
 		pal()
@@ -889,36 +1181,40 @@ function draw_curse()
 	if scene_frame%40<30 then
 		print("press z to continue",26,108)
 	end
-	rect(54,43,74,63)
-	color(0)
-	rectfill(57,43,71,63)
-	rectfill(54,46,74,60)
+	-- rect(54,43,74,63)
+	-- color(0)
+	-- rectfill(57,43,71,63)
+	-- rectfill(54,46,74,60)
 	local curse=player_curses[#player_curses]
 	color(6)
-	print(curse[2],64-2*#curse[2],34)
+	print(curse[2],64-2*#curse[2],44)
 	local i
 	for i=1,#curse[3] do
 		print(curse[3][i],64-2*#curse[3][i],61+7*i)
 	end
-	rect(56,45,72,61,8)
+	-- rect(56,45,72,61,8)
 end
 
 -- death scene methods
 function init_death()
-	player_curses={}
-	shuffle_list(curses)
 end
 
 function update_death()
-	if scene_frame>20 and btnp2("z") then
+	if scene_frame>30 and btnp2("z") then
+		player_curses={}
+		shuffle_list(curses)
 		init_scene("game")
 	end
 end
 
 function draw_death()
 	color(7)
-	print("i'm real sorry but",28,50)
-	print("you died :(",42,60)
+	print("i'm real sorry but",28,25)
+	print("you died :(",42,35)
+	if #player_curses>0 then
+		print("good news tho:",36,60)
+		print("you collected "..#player_curses.." curse"..ternary(#player_curses==1,"","s").."!",17,70)
+	end
 	color(13)
 	if scene_frame%40<30 then
 		print("press z to continue",26,108,13)
@@ -1062,6 +1358,16 @@ function add_new_entities()
 		add(entities,entity)
 	end)
 	new_entities={}
+end
+
+function hurt_entity(e2,e1) -- e2 is hurt by e1
+	if e2.invincibility_frames<=0 then
+		e2.health-=1--e1 and e1.damage or 1
+		e2.invincibility_frames=5
+		if e2:on_hurt(e1)!=false and e2.health<=0 then
+			e2:die()
+		end
+	end
 end
 
 -- scene functions
@@ -1257,10 +1563,10 @@ __gfx__
 00400040400040000000000aa9a9a0022222a0222aa4a40033bbbbb3009a9a90009a9a90009a9a900099a9a00099a9a00099a9a0009999900099999404999990
 00040004000404400000000aa4a940222229a0229aaa94433333333000aa9aa000aa9aa000aa9aa000aaa9a000aaa9a000aaa9a000aaaaa000aaaaa000aaaaa0
 00404002400420040000000094949022222900229aa4400030000000009909900099099000990990009909900099099000990990009909900099099000990990
-40004400404400000000000093aa9022229900009999900000000000009909900000099000990000009909900990099000999900009909900099000000000990
-0444044244420004004000003333a0022999000099a9a00000000000000000000000000000000000000000000000000000000000000000000000000000000000
-4022424224200444440000009339900aaaaa0000aaa9a000000000000000000000022200000444000000000000022200000999000000000000022200000aaa00
-00402444442044200400000093b000099099000999099000000000000000000000222220009999900000000000222220009999a000000000002222200099a990
+4000440040440000000000009caa9022229900009999900000000000009909900000099000990000009909900990099000999900009909900099000000000990
+044404424442000400400000cccca0022999000099a9a00000000000000000000000000000000000000000000000000000000000000000000000000000000000
+4022424224200444440000009c39900aaaaa0000aaa9a000000000000000000000022200000444000000000000022200000999000000000000022200000aaa00
+0040244444204420040000009cb000099099000999099000000000000000000000222220009999900000000000222220009999a000000000002222200099a990
 04002442424442000040000003b00000009900099009900000000000000000000a22222a0999a999000000000aaa22220449999a000000000aa222aa09999999
 00000244444440000000000003b00000000000000000000000000000000000000aa222aa099aaaa9000000000aa9aa22022aa9aa000000000a999a9a099444a9
 00000244444240000000000003b00000000000000000000000000000000000000a9444aa0aaaaaaa000000000a99aa440222aaaa00000000099aaa990aa222aa
@@ -1288,15 +1594,15 @@ d100d100000000000000000000000000000000000000000000000000000000000000000000000000
 00767700077670000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00700700070070000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00700000000070000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000000000000000000000dd00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-000000000000000000000000000dd000000000220000009a90000009900000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000dddd00000002442000099440000099990000000000000000000000000000000000000000000000000000000000000000000000
-00000000000000000000000000022000000022442200099440000092290000000000000000000000a000000000a00000000a0000000000000000000000000000
-0000000000000000000000000042440000000944900022aaa0000022220000000000000000000009a900000099a0000000999000000000000000000000000000
-0000000000000000000000000dd4dd00000009999000aa9a9a000a2222a000000000000000000024942000022490000002222200000000000000000000000000
+08080000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+888e8000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+08880000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0080000000000000000000000000dd00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+077000000000000000000000000dd000000000220000009a90000009900000000000000000000000000000000000000000000000000000000000000000000000
+0aa70000000000000000000000dddd00000002442000099440000099990000000000000000000000000000000000000000000000000000000000000000000000
+00aa7000000000000000000000022000000022442200099440000092290000000000000000000000a000000000a00000000a0000000000000000000000000000
+0a0a700000000000000000000042440000000944900022aaa0000022220000000000000000000009a900000099a0000000999000000000000000000000000000
+9000000000000000000000000dd4dd00000009999000aa9a9a000a2222a000000000000000000024942000022490000002222200000000000000000000000000
 000000000000000000000000d2dddd00000009999000999999000992290000000000000000000024442000022440000002222200000000000000000000000000
 000000000000000000000044442dd44500000999900099999900099229000000000000000000002a4a200022aa4a000002222200000000000000000000000000
 0000000000000000000000055ddd4454000099999900099990000099990000000000000000000aa9a9aa00aa99a9a000a22222a0000000000000000000000000
